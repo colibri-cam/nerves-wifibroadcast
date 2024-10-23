@@ -39,28 +39,30 @@ defmodule NervesWfbNg do
     end
   end
 
-  def start_wfb(card, mode, port, radio_id \\ 0)
+  def start_wfb(card, mode, port, radio_id \\ 0, key \\ nil)
 
-  def start_wfb(card, :tx, port, radio_id) do
-    key_args = ["-K", "drone.key"]
+  def start_wfb(card, :tx, port, radio_id, key) do
+    key_args = ["-K", key || "drone.key"]
     port_args = ["-u", to_string(port)]
     radio_id_args = ["-p", to_string(radio_id)]
     args = Enum.concat([key_args, port_args, radio_id_args, [card]])
 
-    # TODO use muontrap instead
-    port = Bundlex.Port.open(:wfb_tx, args)
-    {port, Port.info(port)}
+    spawn(fn _ -> cmd(bundlex_path(:wfb_tx), args) end)
   end
 
-  def start_wfb(card, :rx, port, radio_id) do
-    key_args = ["-K", "gs.key"]
+  def start_wfb(card, :rx, port, radio_id, key) do
+    key_args = ["-K", key || "gs.key"]
     port_args = ["-u", to_string(port)]
     radio_id_args = ["-p", to_string(radio_id)]
     args = Enum.concat([key_args, port_args, radio_id_args, [card]])
 
-    # TODO use muontrap instead
-    port = Bundlex.Port.open(:wfb_rx, args)
-    Port.info(port)
+    spawn(fn _ -> cmd(bundlex_path(:wfb_rx), args) end)
+  end
+
+  defp bundlex_path(native_name) do
+    app = Application.get_application(__MODULE__)
+
+    Bundlex.build_path(app, native_name, :port)
   end
 
   defp cmd(cmd, args) do

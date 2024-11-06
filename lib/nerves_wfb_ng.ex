@@ -22,7 +22,19 @@ defmodule NervesWfbNg do
   def set_card_channel(card, channel, width) do
     channel = to_string(channel)
     width = to_string(width)
-    with {:ok, _} <- cmd("iw", ["dev", card, "set", channel, width]), do: :ok
+
+    with {:ok, _} <- cmd("iw", ["dev", card, "set", channel, width]),
+         do: :ok
+  end
+
+  @doc """
+  Sets power index on card
+  """
+  def set_card_tx_power(card, mode \\ "fixed", power_index) do
+    with true <- power_index >= 0 and power_index <= 63,
+         power_index = to_string(-power_index * 100),
+         {:ok, _} <- cmd("iw", ["dev", card, "set", "txpower", mode, power_index]),
+         do: :ok
   end
 
   @doc """

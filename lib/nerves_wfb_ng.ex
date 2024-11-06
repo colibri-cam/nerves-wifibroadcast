@@ -8,12 +8,11 @@ defmodule NervesWfbNg do
   @doc """
   Sets card into monitor mode.
   """
-  def set_card_montitor_mode(card) do
+  def set_card_monitor_mode(card) do
     with {:ok, _} <- cmd("ip", ["link", "set", card, "down"]),
          {:ok, _} <- cmd("iw", ["dev", card, "set", "monitor", "otherbss"]),
-         {:ok, _} <- cmd("ip", ["link", "set", card, "up"]) do
-      :ok
-    end
+         {:ok, _} <- cmd("ip", ["link", "set", card, "up"]),
+         do: :ok
   end
 
   @doc """
@@ -41,16 +40,11 @@ defmodule NervesWfbNg do
   Generates pair of keys(drone.key, gs.key) using wfb_keygen to be
   used on drone and groundstation side.
   """
-  def generate_wfb_keys do
-    port = Bundlex.Port.open(:wfb_keygen)
+  def generate_wfb_keys, do: cmd(bundlex_path(:wfb_keygen))
 
-    Port.monitor(port)
-
-    receive do
-      {:DOWN, _, :port, ^port, :normal} -> :ok
-    end
-  end
-
+  @doc """
+  Starts wfb_tx or wfb_rx and creates StringIO device where output is stored
+  """
   def start_wfb(card, mode, port, radio_id \\ 0, key \\ nil)
 
   def start_wfb(card, :tx, port, radio_id, key) do
@@ -59,7 +53,13 @@ defmodule NervesWfbNg do
     radio_id_args = ["-p", to_string(radio_id)]
     args = Enum.concat([key_args, port_args, radio_id_args, [card]])
 
-    spawn(fn _ -> cmd(bundlex_path(:wfb_tx), args) end)
+    cmd_path = bundlex_path(:wfb_tx)
+    {:ok, log_device_pid} = StringIO.open("")
+    log_io_stream = IO.stream(log_device_pid, :line)
+
+    pid = spawn(fn -> cmd(cmd_path, args, into: log_io_stream) end)
+
+    {pid, log_device_pid}
   end
 
   def start_wfb(card, :rx, port, radio_id, key) do
@@ -68,7 +68,13 @@ defmodule NervesWfbNg do
     radio_id_args = ["-p", to_string(radio_id)]
     args = Enum.concat([key_args, port_args, radio_id_args, [card]])
 
-    spawn(fn _ -> cmd(bundlex_path(:wfb_rx), args) end)
+    cmd_path = bundlex_path(:wfb_rx)
+    {:ok, log_device_pid} = StringIO.open("")
+    log_io_stream = IO.stream(log_device_pid, :line)
+
+    pid = spawn(fn -> cmd(cmd_path, args, into: log_io_stream) end)
+
+    {pid, log_device_pid}
   end
 
   defp bundlex_path(native_name) do
@@ -77,8 +83,8 @@ defmodule NervesWfbNg do
     Bundlex.build_path(app, native_name, :port)
   end
 
-  defp cmd(cmd, args) do
-    case MuonTrap.cmd(cmd, args) do
+  defp cmd(cmd, args \\ [], options \\ []) do
+    case MuonTrap.cmd(cmd, args, options) do
       {output, 0} -> {:ok, output}
       {output, err_code} -> {:error, "Error code: #{err_code} \n #{output}"}
     end

@@ -1,9 +1,9 @@
-defmodule NervesWfbNg.MixProject do
+defmodule NervesWifibroadcast.MixProject do
   use Mix.Project
 
   def project do
     [
-      app: :nerves_wfb_ng,
+      app: :nerves_wifibroadcast,
       version: "0.1.0",
       elixir: "~> 1.17",
       start_permanent: Mix.env() == :prod,
@@ -16,7 +16,7 @@ defmodule NervesWfbNg.MixProject do
   def application do
     [
       extra_applications: [:logger],
-      mod: {NervesWfbNg.Application, []}
+      mod: {NervesWifibroadcast.Application, []}
     ]
   end
 

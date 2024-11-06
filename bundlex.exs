@@ -1,4 +1,4 @@
-defmodule NervesWfbNg.BundlexProject do
+defmodule NervesWifibroadcast.BundlexProject do
   use Bundlex.Project
 
   def project() do
@@ -15,7 +15,7 @@ defmodule NervesWfbNg.BundlexProject do
         language: :cpp,
         compiler_flags: ["-std=gnu++11", "-fno-strict-aliasing", "-DWFB_VERSION=\'\"24.8.17.79622-8c81d238\"\'"],
         linker_flags: ["-lrt", "-lsodium"],
-        deps: [nerves_wfb_ng: :fec, nerves_wfb_ng: :wifibroadcast],
+        deps: [nerves_wifibroadcast: :fec, nerves_wifibroadcast: :wifibroadcast],
         interface: :port,
       ],
       wfb_rx: [
@@ -23,7 +23,7 @@ defmodule NervesWfbNg.BundlexProject do
         language: :cpp,
         compiler_flags: ["-std=gnu++11", "-fno-strict-aliasing", "-DWFB_VERSION=\'\"24.8.17.79622-8c81d238\"\'"],
         linker_flags: ["-lrt", "-lsodium", "-lpcap"],
-        deps: [nerves_wfb_ng: :radiotap, nerves_wfb_ng: :fec, nerves_wfb_ng: :wifibroadcast],
+        deps: [nerves_wifibroadcast: :radiotap, nerves_wifibroadcast: :fec, nerves_wifibroadcast: :wifibroadcast],
         interface: :port,
       ],
       wfb_keygen: [

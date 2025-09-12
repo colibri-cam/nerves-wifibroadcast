@@ -1,6 +1,11 @@
 # NervesWfbNg
 
-**TODO: Add description**
+WFB-ng c++ bundled with bundlex so they also work on nerves systems.
+
+# Status
+
+It is just an experiment, might become ready in a few months
+you will know whe you will be able to find it on hex
 
 ## Installation
 
@@ -10,7 +15,7 @@ by adding `nerves_wfb_ng` to your list of dependencies in `mix.exs`:
 ```elixir
 def deps do
   [
-    {:nerves_wfb_ng, "~> 0.1.0"}
+    {:nerves_wfb_ng, git: "https://github.com/colibri-cam/nerves-wifibroadcast" }
   ]
 end
 ```

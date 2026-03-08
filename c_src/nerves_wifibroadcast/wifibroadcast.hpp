@@ -1,3 +1,4 @@
+#pragma once
 // Copyright (C) 2017 - 2024 Vasily Evseenko <svpcom@p2ptech.org>
 
 /*
@@ -16,9 +17,6 @@
  */
 
 
-#ifndef __WIFIBROADCAST_HPP__
-#define __WIFIBROADCAST_HPP__
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <errno.h>
@@ -36,6 +34,10 @@
 #include <endian.h>
 #include <string>
 #include <vector>
+
+#if defined (PREINCLUDE_FILE)
+#include PREINCLUDE_FILE
+#endif
 
 extern std::string string_format(const char *format, ...);
 
@@ -57,18 +59,18 @@ extern std::string string_format(const char *format, ...);
 #define IEEE80211_RADIOTAP_MCS_HAVE_FEC   0x10
 #define IEEE80211_RADIOTAP_MCS_HAVE_STBC  0x20
 #define IEEE80211_RADIOTAP_MCS_FEC_LDPC   0x10
-#define	IEEE80211_RADIOTAP_MCS_STBC_MASK  0x60
-#define	IEEE80211_RADIOTAP_MCS_STBC_1  1
-#define	IEEE80211_RADIOTAP_MCS_STBC_2  2
-#define	IEEE80211_RADIOTAP_MCS_STBC_3  3
-#define	IEEE80211_RADIOTAP_MCS_STBC_SHIFT 5
+#define IEEE80211_RADIOTAP_MCS_STBC_MASK  0x60
+#define IEEE80211_RADIOTAP_MCS_STBC_1  1
+#define IEEE80211_RADIOTAP_MCS_STBC_2  2
+#define IEEE80211_RADIOTAP_MCS_STBC_3  3
+#define IEEE80211_RADIOTAP_MCS_STBC_SHIFT 5
 
 #define IEEE80211_RADIOTAP_VHT_FLAG_STBC    0x01
 #define IEEE80211_RADIOTAP_VHT_FLAG_SGI     0x04
-#define	IEEE80211_RADIOTAP_VHT_MCS_MASK     0xF0
-#define	IEEE80211_RADIOTAP_VHT_NSS_MASK     0x0F
-#define	IEEE80211_RADIOTAP_VHT_MCS_SHIFT    4
-#define	IEEE80211_RADIOTAP_VHT_NSS_SHIFT    0
+#define IEEE80211_RADIOTAP_VHT_MCS_MASK     0xF0
+#define IEEE80211_RADIOTAP_VHT_NSS_MASK     0x0F
+#define IEEE80211_RADIOTAP_VHT_MCS_SHIFT    4
+#define IEEE80211_RADIOTAP_VHT_NSS_SHIFT    0
 #define IEEE80211_RADIOTAP_VHT_BW_20M       0x00
 #define IEEE80211_RADIOTAP_VHT_BW_40M       0x01
 #define IEEE80211_RADIOTAP_VHT_BW_80M       0x04
@@ -253,9 +255,36 @@ typedef struct {
 #define MAX_FEC_PAYLOAD  (WIFI_MTU - sizeof(ieee80211_header) - sizeof(wblock_hdr_t) - crypto_aead_chacha20poly1305_ABYTES)
 #define MAX_FORWARDER_PACKET_SIZE (WIFI_MTU - sizeof(ieee80211_header))
 #define MAX_SESSION_PACKET_SIZE (WIFI_MTU - sizeof(ieee80211_header))
+#define MIN_DISTRIBUTION_PACKET_SIZE (sizeof(uint32_t) + sizeof(radiotap_header_ht) + sizeof(ieee80211_header))   // ht hdr < vht hdr
+#define MAX_DISTRIBUTION_PACKET_SIZE (sizeof(uint32_t) + sizeof(radiotap_header_vht) + WIFI_MTU)
+#define MAX_PCAP_PACKET_SIZE (WIFI_MTU + 256)  // radiotap header is variable but 8812au/eu has max rtap buffer size 256
 
-int open_udp_socket_for_rx(int port, int rcv_buf_size, uint32_t bind_addr = INADDR_ANY);
+#ifndef WFB_DBG
+#ifdef __DEBUG__
+#define WFB_DBG(...)  fprintf(stderr, __VA_ARGS__)
+#else
+#define WFB_DBG(...)  ((void)0)
+#endif
+#endif
+
+#ifndef WFB_ERR
+#define WFB_ERR(...) fprintf(stderr, __VA_ARGS__)
+#endif
+
+#ifndef WFB_INFO
+#define WFB_INFO(...) fprintf(stderr, __VA_ARGS__)
+#endif
+
+#ifndef ANDROID_IPC_MSG
+#define ANDROID_IPC_MSG(...) ((void)0)
+#endif
+
+#ifndef IPC_MSG
+#define IPC_MSG(...) fprintf(stdout, __VA_ARGS__)
+#define IPC_MSG_SEND()  fflush(stdout)
+#endif
+
+int open_udp_socket_for_rx(int port, int rcv_buf_size, uint32_t bind_addr = INADDR_ANY, int socket_type = SOCK_DGRAM, int socket_protocol = 0);
+int open_unix_socket_for_rx(const char *socket_path, int rcv_buf_size, int socket_type = SOCK_DGRAM, int socket_protocol = 0);
 uint64_t get_time_ms(void);
 uint64_t get_time_us(void);
-
-#endif

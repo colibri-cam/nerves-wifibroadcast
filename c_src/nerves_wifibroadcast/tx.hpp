@@ -1,3 +1,4 @@
+#pragma once
 // -*- C++ -*-
 //
 // Copyright (C) 2017 - 2024 Vasily Evseenko <svpcom@p2ptech.org>
@@ -25,12 +26,11 @@
 #include <errno.h>
 #include <string>
 #include <vector>
+#include <map>
 #include <string.h>
 #include <stdexcept>
-#include <cassert>
 
 #include "wifibroadcast.hpp"
-#include "fec.h"
 #include "tx_cmd.h"
 
 
@@ -41,6 +41,34 @@ typedef struct {
 } tags_item_t;
 
 
+typedef struct {
+    std::vector<uint8_t> header;
+
+    // header info
+    uint8_t stbc;
+    bool ldpc;
+    bool short_gi;
+    uint8_t bandwidth;
+    uint8_t mcs_index;
+    bool vht_mode;
+    uint8_t vht_nss;
+} radiotap_header_t;
+
+
+radiotap_header_t init_radiotap_header(uint8_t stbc,
+                                       bool ldpc,
+                                       bool short_gi,
+                                       uint8_t bandwidth,
+                                       uint8_t mcs_index,
+                                       bool vht_mode,
+                                       uint8_t vht_nss);
+
+typedef enum {
+    LOCAL,
+    INJECTOR,
+    DISTRIBUTOR
+} tx_mode_t;
+
 class Transmitter
 {
 public:
@@ -49,9 +77,11 @@ public:
     bool send_packet(const uint8_t *buf, size_t size, uint8_t flags);
     void send_session_key(void);
     void init_session(int k, int n);
+    void get_fec(int &k, int &n) { k = fec_k; n = fec_n; }
     virtual void select_output(int idx) = 0;
-    virtual void dump_stats(FILE *fp, uint64_t ts, uint32_t &injected_packets, uint32_t &dropped_packets, uint32_t &injected_bytes) = 0;
-    virtual void update_radiotap_header(std::vector<uint8_t> &radiotap_header) {}
+    virtual void dump_stats(uint64_t ts, uint32_t &injected_packets, uint32_t &dropped_packets, uint32_t &injected_bytes) = 0;
+    virtual void update_radiotap_header(radiotap_header_t &radiotap_header) = 0;
+    virtual radiotap_header_t get_radiotap_header(void) = 0;
 protected:
     virtual void inject_packet(const uint8_t *buf, size_t size) = 0;
     virtual void set_mark(uint32_t idx) = 0;
@@ -81,6 +111,7 @@ private:
     uint16_t session_packet_size;
     std::vector<tags_item_t> tags;
 };
+
 
 class txAntennaItem
 {
@@ -126,38 +157,47 @@ class RawSocketTransmitter : public Transmitter
 {
 public:
     RawSocketTransmitter(int k, int n, const std::string &keypair, uint64_t epoch, uint32_t channel_id, uint32_t fec_delay, std::vector<tags_item_t> &tags,
-                         const std::vector<std::string> &wlans, std::vector<uint8_t> &radiotap_header,
-                         uint8_t frame_type, bool use_qdisc, uint32_t fwmark);
+                         const std::vector<std::string> &wlans, radiotap_header_t &radiotap_header,
+                         uint8_t frame_type, bool use_qdisc, uint32_t fwmark_base, uint32_t inject_retries, uint32_t inject_retry_delay);
     virtual ~RawSocketTransmitter();
+
     virtual void select_output(int idx)
     {
-        bool sw = current_output != idx;
         current_output = idx;
-        if (sw)
-        {
-            // select_output call should happend only between data packets
-            // All FEC packets issued after last data packet in block and will have set_mark(1)
-            set_mark(0);
-        }
     }
-    virtual void dump_stats(FILE *fp, uint64_t ts, uint32_t &injected_packets, uint32_t &dropped_packets, uint32_t &injected_bytes);
-    virtual void update_radiotap_header(std::vector<uint8_t> &radiotap_header)
+
+    virtual void dump_stats(uint64_t ts, uint32_t &injected_packets, uint32_t &dropped_packets, uint32_t &injected_bytes);
+    virtual void update_radiotap_header(radiotap_header_t &radiotap_header)
     {
         this->radiotap_header = radiotap_header;
     }
 
+    virtual radiotap_header_t get_radiotap_header(void)
+    {
+        return radiotap_header;
+    }
+
 private:
     virtual void inject_packet(const uint8_t *buf, size_t size);
-    virtual void set_mark(uint32_t idx);
+
+    virtual void set_mark(uint32_t idx)
+    {
+        fwmark = fwmark_base + idx;
+    }
+
     const uint32_t channel_id;
     int current_output;
     uint16_t ieee80211_seq;
     std::vector<int> sockfds;
+    std::map<int, uint32_t> fd_fwmarks;
     tx_antenna_stat_t antenna_stat;
-    std::vector<uint8_t> radiotap_header;
+    radiotap_header_t radiotap_header;
     const uint8_t frame_type;
     const bool use_qdisc;
-    const uint32_t fwmark;
+    const uint32_t fwmark_base;
+    uint32_t fwmark;
+    const uint32_t inject_retries;     // number of injection retries when drives returns ENOBUFS
+    const uint32_t inject_retry_delay; // [usec] delay before retry if drivers returns ENOBUFS
 };
 
 
@@ -165,11 +205,20 @@ class UdpTransmitter : public Transmitter
 {
 public:
     UdpTransmitter(int k, int n, const std::string &keypair, const std::string &client_addr, int base_port, uint64_t epoch, uint32_t channel_id,
-                   uint32_t fec_delay, std::vector<tags_item_t> &tags, bool use_qdisc, uint32_t fwmark): \
-        Transmitter(k, n, keypair, epoch, channel_id, fec_delay, tags), base_port(base_port), use_qdisc(use_qdisc), fwmark(fwmark)
+                   uint32_t fec_delay, std::vector<tags_item_t> &tags, bool use_qdisc, uint32_t fwmark_base, int snd_buf_size): \
+        Transmitter(k, n, keypair, epoch, channel_id, fec_delay, tags), radiotap_header({}), base_port(base_port), use_qdisc(use_qdisc), fwmark_base(fwmark_base)
     {
         sockfd = socket(AF_INET, SOCK_DGRAM, 0);
         if (sockfd < 0) throw std::runtime_error(string_format("Error opening socket: %s", strerror(errno)));
+
+        if (snd_buf_size > 0)
+        {
+            if(setsockopt(sockfd, SOL_SOCKET, SO_SNDBUF, (const void *)&snd_buf_size , sizeof(snd_buf_size)) !=0)
+            {
+                close(sockfd);
+                throw runtime_error(string_format("Unable to set SO_SNDBUF: %s", strerror(errno)));
+            }
+        }
 
         memset(&saddr, '\0', sizeof(saddr));
         saddr.sin_family = AF_INET;
@@ -177,7 +226,7 @@ public:
         saddr.sin_port = htons((unsigned short)base_port);
     }
 
-    virtual void dump_stats(FILE *fp, uint64_t ts, uint32_t &injected_packets, uint32_t &dropped_packets, uint32_t &injected_bytes) {}
+    virtual void dump_stats(uint64_t ts, uint32_t &injected_packets, uint32_t &dropped_packets, uint32_t &injected_bytes) {}
 
     virtual ~UdpTransmitter()
     {
@@ -197,12 +246,23 @@ public:
             return;
         }
 
-        uint32_t sockopt = this->fwmark + idx;
+        uint32_t sockopt = this->fwmark_base + idx;
         if(setsockopt(sockfd, SOL_SOCKET, SO_MARK, (const void *)&sockopt , sizeof(sockopt)) !=0)
         {
-            throw std::runtime_error(string_format("Unable to set SO_MARK fd(%d)=%u: %s", sockfd, sockopt, strerror(errno)));
+            throw runtime_error(string_format("Unable to set SO_MARK fd(%d)=%u: %s", sockfd, sockopt, strerror(errno)));
         }
     }
+
+    virtual void update_radiotap_header(radiotap_header_t &radiotap_header)
+    {
+        this->radiotap_header = radiotap_header;
+    }
+
+    virtual radiotap_header_t get_radiotap_header(void)
+    {
+        return radiotap_header;
+    }
+
 
 private:
     virtual void inject_packet(const uint8_t *buf, size_t size)
@@ -237,17 +297,148 @@ private:
         sendmsg(sockfd, &msghdr, MSG_DONTWAIT);
     }
 
+    radiotap_header_t radiotap_header;
     int sockfd;
     int base_port;
     struct sockaddr_in saddr;
     const bool use_qdisc;
-    const uint32_t fwmark;
+    const uint32_t fwmark_base;
 };
 
-std::vector<uint8_t> init_radiotap_header(uint8_t stbc,
-                                          bool ldpc,
-                                          bool short_gi,
-                                          uint8_t bandwidth,
-                                          uint8_t mcs_index,
-                                          bool vht_mode,
-                                          uint8_t vht_nss);
+
+class RemoteTransmitter : public Transmitter
+{
+public:
+    RemoteTransmitter(int k, int n, const std::string &keypair, uint64_t epoch, uint32_t channel_id, uint32_t fec_delay, std::vector<tags_item_t> &tags,
+                      const std::vector<std::pair<std::string, std::vector<uint16_t>>> &remote_hosts, radiotap_header_t &radiotap_header,
+                      uint8_t frame_type, bool use_qdisc, uint32_t fwmark_base, int snd_buf_size);
+    virtual ~RemoteTransmitter()
+    {
+        close(sockfd);
+    }
+
+    virtual void select_output(int idx)
+    {
+        current_output = idx;
+    }
+
+    virtual void dump_stats(uint64_t ts, uint32_t &injected_packets, uint32_t &dropped_packets, uint32_t &injected_bytes);
+    virtual void update_radiotap_header(radiotap_header_t &radiotap_header)
+    {
+        this->radiotap_header = radiotap_header;
+    }
+
+    virtual radiotap_header_t get_radiotap_header(void)
+    {
+        return radiotap_header;
+    }
+
+private:
+    virtual void inject_packet(const uint8_t *buf, size_t size);
+
+    virtual void set_mark(uint32_t idx)
+    {
+        fwmark = fwmark_base + idx;
+    }
+
+    const uint32_t channel_id;
+    int current_output;
+    uint16_t ieee80211_seq;
+    int sockfd;
+    std::vector<struct sockaddr_in> sockaddrs;
+    std::map<int, uint64_t> output_to_ant_id;
+    tx_antenna_stat_t antenna_stat;
+    radiotap_header_t radiotap_header;
+    const uint8_t frame_type;
+    const bool use_qdisc;
+    const uint32_t fwmark_base;
+    uint32_t fwmark;
+};
+
+
+class RawSocketInjector
+{
+public:
+
+    RawSocketInjector(const vector<string> &wlans, bool use_qdisc) : use_qdisc(use_qdisc)
+    {
+        for(auto it=wlans.begin(); it!=wlans.end(); it++)
+        {
+            int fd = socket(PF_PACKET, SOCK_RAW, 0);
+            if (fd < 0)
+            {
+                throw runtime_error(string_format("Unable to open PF_PACKET socket: %s", strerror(errno)));
+            }
+
+            if(!use_qdisc)
+            {
+                const int optval = 1;
+                if(setsockopt(fd, SOL_PACKET, PACKET_QDISC_BYPASS, (const void *)&optval , sizeof(optval)) !=0)
+                {
+                    close(fd);
+                    throw runtime_error(string_format("Unable to set PACKET_QDISC_BYPASS: %s", strerror(errno)));
+                }
+            }
+
+            struct ifreq ifr;
+            memset(&ifr, '\0', sizeof(ifr));
+            strncpy(ifr.ifr_name, it->c_str(), sizeof(ifr.ifr_name) - 1);
+
+            if (ioctl(fd, SIOCGIFINDEX, &ifr) < 0)
+            {
+                close(fd);
+                throw runtime_error(string_format("Unable to get interface index for %s: %s", it->c_str(), strerror(errno)));
+            }
+
+            struct sockaddr_ll sll;
+            memset(&sll, '\0', sizeof(sll));
+            sll.sll_family = AF_PACKET;
+            sll.sll_ifindex = ifr.ifr_ifindex;
+            sll.sll_protocol = 0;
+
+            if (::bind(fd, (struct sockaddr *) &sll, sizeof(sll)) < 0)
+            {
+                close(fd);
+                throw runtime_error(string_format("Unable to bind to %s: %s", it->c_str(), strerror(errno)));
+            }
+
+            sockfds.push_back(fd);
+            fd_fwmarks[fd] = 0;
+        }
+    }
+
+    void inject_packet(int wlan_idx, const uint8_t *buf, size_t size, uint32_t fwmark)
+    {
+        int fd = sockfds[wlan_idx];
+
+        if (use_qdisc && fd_fwmarks[fd] != fwmark)
+        {
+            uint32_t sockopt = fwmark;
+
+            if(setsockopt(fd, SOL_SOCKET, SO_MARK, (const void *)&sockopt , sizeof(sockopt)) !=0)
+            {
+                throw runtime_error(string_format("Unable to set SO_MARK fd(%d)=%u: %s", fd, sockopt, strerror(errno)));
+            }
+
+            fd_fwmarks[fd] = fwmark;
+        }
+
+        if (send(fd, buf, size, 0) < 0 && errno != ENOBUFS)
+        {
+            throw runtime_error(string_format("Unable to inject packet: %s", strerror(errno)));
+        }
+    }
+
+    ~RawSocketInjector()
+    {
+        for(auto it=sockfds.begin(); it != sockfds.end(); it++)
+        {
+            close(*it);
+        }
+    }
+
+private:
+    std::vector<int> sockfds;
+    std::map<int, uint32_t> fd_fwmarks;
+    const bool use_qdisc;
+};

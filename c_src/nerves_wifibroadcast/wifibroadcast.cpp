@@ -18,6 +18,7 @@
 #include <stdlib.h>
 #include <stdarg.h>
 #include <sys/socket.h>
+#include <sys/un.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <string>
@@ -62,10 +63,10 @@ uint64_t get_time_us(void) // in microseconds
     return ts.tv_sec * 1000000LL + ts.tv_nsec / 1000;
 }
 
-int open_udp_socket_for_rx(int port, int rcv_buf_size, uint32_t bind_addr)
+int open_udp_socket_for_rx(int port, int rcv_buf_size, uint32_t bind_addr, int socket_type, int socket_protocol)
 {
     struct sockaddr_in saddr;
-    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    int fd = socket(AF_INET, socket_type, socket_protocol);
     if (fd < 0) throw runtime_error(string_format("Error opening socket: %s", strerror(errno)));
 
     const int optval = 1;
@@ -98,7 +99,49 @@ int open_udp_socket_for_rx(int port, int rcv_buf_size, uint32_t bind_addr)
     if (::bind(fd, (struct sockaddr *) &saddr, sizeof(saddr)) < 0)
     {
         close(fd);
-        throw runtime_error(string_format("Bind error: %s", strerror(errno)));
+        throw runtime_error(string_format("Unable to bind to %s:%d : %s", inet_ntoa(saddr.sin_addr), port, strerror(errno)));
+    }
+    return fd;
+}
+
+
+int open_unix_socket_for_rx(const char *socket_path, int rcv_buf_size, int socket_type, int socket_protocol)
+{
+    struct sockaddr_un saddr;
+
+    int fd = socket(AF_UNIX, socket_type, socket_protocol);
+    if (fd < 0) throw runtime_error(string_format("Error opening socket: %s", strerror(errno)));
+
+    const int optval = 1;
+    if(setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (const void *)&optval , sizeof(optval)) !=0)
+    {
+        close(fd);
+        throw runtime_error(string_format("Unable to set SO_REUSEADDR: %s", strerror(errno)));
+    }
+
+    if(setsockopt(fd, SOL_SOCKET, SO_RXQ_OVFL, (const void *)&optval , sizeof(optval)) != 0)
+    {
+        close(fd);
+        throw runtime_error(string_format("Unable to set SO_RXQ_OVFL: %s", strerror(errno)));
+    }
+
+    if (rcv_buf_size > 0)
+    {
+        if(setsockopt(fd, SOL_SOCKET, SO_RCVBUF, (const void *)&rcv_buf_size , sizeof(rcv_buf_size)) !=0)
+        {
+            close(fd);
+            throw runtime_error(string_format("Unable to set SO_RCVBUF: %s", strerror(errno)));
+        }
+    }
+
+    memset(&saddr, '\0', sizeof(saddr));
+    saddr.sun_family = AF_UNIX;
+    strncpy(saddr.sun_path + 1, socket_path, sizeof(saddr.sun_path) - 2);
+
+    if (::bind(fd, (struct sockaddr *) &saddr, sizeof(sa_family_t) + strlen(saddr.sun_path + 1) + 1) < 0)
+    {
+        close(fd);
+        throw runtime_error(string_format("Unable to bind to @%s : %s", saddr.sun_path + 1, strerror(errno)));
     }
     return fd;
 }

@@ -19,6 +19,7 @@
 
 #include <assert.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <inttypes.h>
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -30,15 +31,17 @@
 #include <poll.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <sys/un.h>
 #include <arpa/inet.h>
 #include <limits.h>
 #include <sys/ioctl.h>
 #include <linux/random.h>
 
+#include "zfex.h"
+
 extern "C"
 {
 #include "ieee80211_radiotap.h"
-#include "fec.h"
 }
 
 #include <string>
@@ -50,7 +53,7 @@ extern "C"
 using namespace std;
 
 
-Receiver::Receiver(const char *wlan, int wlan_idx, uint32_t channel_id, BaseAggregator *agg) : wlan_idx(wlan_idx), agg(agg)
+Receiver::Receiver(const char *wlan, int wlan_idx, uint32_t channel_id, BaseAggregator *agg, int rcv_buf_size) : wlan_idx(wlan_idx), agg(agg)
 {
     char errbuf[PCAP_ERRBUF_SIZE];
 
@@ -60,33 +63,42 @@ Receiver::Receiver(const char *wlan, int wlan_idx, uint32_t channel_id, BaseAggr
         throw runtime_error(string_format("Unable to open interface %s in pcap: %s", wlan, errbuf));
     }
 
-    if (pcap_set_snaplen(ppcap, 4096) !=0) throw runtime_error("set_snaplen failed");
-    if (pcap_set_promisc(ppcap, 1) != 0) throw runtime_error("set_promisc failed");
-    if (pcap_set_timeout(ppcap, -1) !=0) throw runtime_error("set_timeout failed");
-    if (pcap_set_immediate_mode(ppcap, 1) != 0) throw runtime_error(string_format("pcap_set_immediate_mode failed: %s", pcap_geterr(ppcap)));
-    if (pcap_activate(ppcap) !=0) throw runtime_error(string_format("pcap_activate failed: %s", pcap_geterr(ppcap)));
-    if (pcap_setnonblock(ppcap, 1, errbuf) != 0) throw runtime_error(string_format("set_nonblock failed: %s", errbuf));
+    try
+    {
+        if (rcv_buf_size > 0 && pcap_set_buffer_size(ppcap, rcv_buf_size) != 0) throw runtime_error("set_buffer_size failed");
+        if (pcap_set_snaplen(ppcap, MAX_PCAP_PACKET_SIZE) != 0) throw runtime_error("set_snaplen failed");
+        if (pcap_set_promisc(ppcap, 1) != 0) throw runtime_error("set_promisc failed");
+        if (pcap_set_timeout(ppcap, -1) != 0) throw runtime_error("set_timeout failed");
+        if (pcap_set_immediate_mode(ppcap, 1) != 0) throw runtime_error(string_format("pcap_set_immediate_mode failed: %s", pcap_geterr(ppcap)));
+        if (pcap_activate(ppcap) !=0) throw runtime_error(string_format("pcap_activate failed: %s", pcap_geterr(ppcap)));
+        if (pcap_setnonblock(ppcap, 1, errbuf) != 0) throw runtime_error(string_format("set_nonblock failed: %s", errbuf));
 
-    int link_encap = pcap_datalink(ppcap);
-    struct bpf_program bpfprogram;
-    string program;
+        int link_encap = pcap_datalink(ppcap);
+        struct bpf_program bpfprogram;
+        string program;
 
-    if (link_encap != DLT_IEEE802_11_RADIO) {
-        throw runtime_error(string_format("unknown encapsulation on %s", wlan));
+        if (link_encap != DLT_IEEE802_11_RADIO) {
+            throw runtime_error(string_format("unknown encapsulation on %s", wlan));
+        }
+
+        program = string_format("ether[0x0a:2]==0x5742 && ether[0x0c:4] == 0x%08x", channel_id);
+
+        if (pcap_compile(ppcap, &bpfprogram, program.c_str(), 1, 0) == -1) {
+            throw runtime_error(string_format("Unable to compile %s: %s", program.c_str(), pcap_geterr(ppcap)));
+        }
+
+        if (pcap_setfilter(ppcap, &bpfprogram) == -1) {
+            throw runtime_error(string_format("Unable to set filter %s: %s", program.c_str(), pcap_geterr(ppcap)));
+        }
+
+        pcap_freecode(&bpfprogram);
+        fd = pcap_get_selectable_fd(ppcap);
     }
-
-    program = string_format("ether[0x0a:2]==0x5742 && ether[0x0c:4] == 0x%08x", channel_id);
-
-    if (pcap_compile(ppcap, &bpfprogram, program.c_str(), 1, 0) == -1) {
-        throw runtime_error(string_format("Unable to compile %s: %s", program.c_str(), pcap_geterr(ppcap)));
+    catch(...)
+    {
+        pcap_close(ppcap);
+        throw;
     }
-
-    if (pcap_setfilter(ppcap, &bpfprogram) == -1) {
-        throw runtime_error(string_format("Unable to set filter %s: %s", program.c_str(), pcap_geterr(ppcap)));
-    }
-
-    pcap_freecode(&bpfprogram);
-    fd = pcap_get_selectable_fd(ppcap);
 }
 
 
@@ -193,7 +205,7 @@ void Receiver::loop_iter(void)
 
             case IEEE80211_RADIOTAP_VHT:
             {
-		/* u16 known, u8 flags, u8 bandwidth, u8 mcs_nss[4], u8 coding, u8 group_id, u16 partial_aid */
+                /* u16 known, u8 flags, u8 bandwidth, u8 mcs_nss[4], u8 coding, u8 group_id, u16 partial_aid */
                 u8 known = iterator.this_arg[0];
 
                 if(known & 0x40)
@@ -218,7 +230,7 @@ void Receiver::loop_iter(void)
         }  /* while more rt headers */
 
         if (ret != -ENOENT && ant_idx < RX_ANT_MAX){
-            fprintf(stderr, "Error parsing radiotap header!\n");
+            WFB_ERR("Error parsing radiotap header!\n");
             continue;
         }
 
@@ -235,7 +247,7 @@ void Receiver::loop_iter(void)
 
         if (flags & IEEE80211_RADIOTAP_F_BADFCS)
         {
-            fprintf(stderr, "Got packet with bad fsc\n");
+            WFB_ERR("Got packet with bad fsc\n");
             continue;
         }
 
@@ -243,27 +255,26 @@ void Receiver::loop_iter(void)
         pkt += iterator._max_length;
         pktlen -= iterator._max_length;
 
-        //fprintf(stderr, "CAPTURE: mcs: %u, bw: %u\n", mcs_index, bandwidth);
         if (pktlen > (int)sizeof(ieee80211_header))
         {
             agg->process_packet(pkt + sizeof(ieee80211_header), pktlen - sizeof(ieee80211_header),
                                 wlan_idx, antenna, rssi, noise, freq, mcs_index, bandwidth, NULL);
         } else {
-            fprintf(stderr, "Short packet (ieee header)\n");
+            WFB_ERR("Short packet (ieee header)\n");
             continue;
         }
     }
 }
 
 
-Aggregator::Aggregator(const string &client_addr, int client_port, const string &keypair, uint64_t epoch, uint32_t channel_id) : \
-    count_p_all(0), count_b_all(0), count_p_dec_err(0), count_p_dec_ok(0), count_p_fec_recovered(0),
+Aggregator::Aggregator(const string &keypair, uint64_t epoch, uint32_t channel_id) : \
+    count_p_all(0), count_b_all(0), count_p_dec_err(0), count_p_session(0), count_p_data(0), count_p_fec_recovered(0),
     count_p_lost(0), count_p_bad(0), count_p_override(0), count_p_outgoing(0), count_b_outgoing(0),
     fec_p(NULL), fec_k(-1), fec_n(-1), seq(0), rx_ring{}, rx_ring_front(0), rx_ring_alloc(0),
     last_known_block((uint64_t)-1), epoch(epoch), channel_id(channel_id)
 {
-    sockfd = open_udp_socket_for_tx(client_addr, client_port);
     memset(session_key, '\0', sizeof(session_key));
+    memset(session_hash, '\0', sizeof(session_hash));
 
     FILE *fp;
     if((fp = fopen(keypair.c_str(), "r")) == NULL)
@@ -290,7 +301,6 @@ Aggregator::~Aggregator()
     {
         deinit_fec();
     }
-    close(sockfd);
 }
 
 void Aggregator::init_fec(int k, int n)
@@ -303,7 +313,9 @@ void Aggregator::init_fec(int k, int n)
 
     fec_k = k;
     fec_n = n;
-    fec_p = fec_new(fec_k, fec_n);
+
+    zfex_status_code_t rc = fec_new(fec_k, fec_n, &fec_p);
+    assert(rc == ZFEX_SC_OK);
 
     rx_ring_front = 0;
     rx_ring_alloc = 0;
@@ -318,10 +330,11 @@ void Aggregator::init_fec(int k, int n)
         rx_ring[ring_idx].fragments = new uint8_t*[fec_n];
         for(int i=0; i < fec_n; i++)
         {
-            rx_ring[ring_idx].fragments[i] = new uint8_t[MAX_FEC_PAYLOAD];
+            int _rc = posix_memalign((void**)&rx_ring[ring_idx].fragments[i], ZFEX_SIMD_ALIGNMENT, ZFEX_ROUND_UP_SIMD(MAX_FEC_PAYLOAD));
+            assert(_rc == 0);
         }
-        rx_ring[ring_idx].fragment_map = new uint8_t[fec_n];
-        memset(rx_ring[ring_idx].fragment_map, '\0', fec_n * sizeof(uint8_t));
+        rx_ring[ring_idx].fragment_map = new size_t[fec_n];
+        memset(rx_ring[ring_idx].fragment_map, '\0', fec_n * sizeof(size_t));
     }
 }
 
@@ -331,24 +344,42 @@ void Aggregator::deinit_fec(void)
 
     for(int ring_idx = 0; ring_idx < RX_RING_SIZE; ring_idx++)
     {
-        delete rx_ring[ring_idx].fragment_map;
+        delete[] rx_ring[ring_idx].fragment_map;
+        rx_ring[ring_idx].fragment_map = NULL;
         for(int i=0; i < fec_n; i++)
         {
-            delete rx_ring[ring_idx].fragments[i];
+            free(rx_ring[ring_idx].fragments[i]);
         }
-        delete rx_ring[ring_idx].fragments;
+        delete[] rx_ring[ring_idx].fragments;
+        rx_ring[ring_idx].fragments = NULL;
     }
 
-    fec_free(fec_p);
+    zfex_status_code_t rc = fec_free(fec_p);
+    assert(rc == ZFEX_SC_OK);
     fec_p = NULL;
     fec_k = -1;
     fec_n = -1;
 }
 
 
-Forwarder::Forwarder(const string &client_addr, int client_port)
+Forwarder::Forwarder(const string &client_addr, int client_port, int snd_buf_size)
 {
-    sockfd = open_udp_socket_for_tx(client_addr, client_port);
+    sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sockfd < 0) throw std::runtime_error(string_format("Error opening socket: %s", strerror(errno)));
+
+    if (snd_buf_size > 0)
+    {
+        if(setsockopt(sockfd, SOL_SOCKET, SO_SNDBUF, (const void *)&snd_buf_size , sizeof(snd_buf_size)) !=0)
+        {
+            close(sockfd);
+            throw runtime_error(string_format("Unable to set SO_SNDBUF: %s", strerror(errno)));
+        }
+    }
+
+    memset(&saddr, '\0', sizeof(saddr));
+    saddr.sin_family = AF_INET;
+    saddr.sin_addr.s_addr = inet_addr(client_addr.c_str());
+    saddr.sin_port = htons((unsigned short)client_port);
 }
 
 
@@ -370,8 +401,8 @@ void Forwarder::process_packet(const uint8_t *buf, size_t size, uint8_t wlan_idx
                            { .iov_base = (void*)buf,
                              .iov_len = size }};
 
-    struct msghdr msghdr = { .msg_name = NULL,
-                             .msg_namelen = 0,
+    struct msghdr msghdr = { .msg_name = &saddr,
+                             .msg_namelen = sizeof(saddr),
                              .msg_iov = iov,
                              .msg_iovlen = 2,
                              .msg_control = NULL,
@@ -404,9 +435,7 @@ int Aggregator::rx_ring_push(void)
       2. Reduce packet injection speed or try to unify RX hardware.
     */
 
-#if 0
-    fprintf(stderr, "Override block 0x%" PRIx64 " flush %d fragments\n", rx_ring[rx_ring_front].block_idx, rx_ring[rx_ring_front].has_fragments);
-#endif
+    WFB_DBG("AGG: Override block 0x%" PRIx64 " flush %d fragments\n", rx_ring[rx_ring_front].block_idx, rx_ring[rx_ring_front].has_fragments);
 
     count_p_override += 1;
 
@@ -451,36 +480,42 @@ int Aggregator::get_block_ring_idx(uint64_t block_idx)
         rx_ring[ring_idx].block_idx = block_idx + i + 1 - new_blocks;
         rx_ring[ring_idx].fragment_to_send_idx = 0;
         rx_ring[ring_idx].has_fragments = 0;
-        memset(rx_ring[ring_idx].fragment_map, '\0', fec_n * sizeof(uint8_t));
+        memset(rx_ring[ring_idx].fragment_map, '\0', fec_n * sizeof(size_t));
     }
     return ring_idx;
 }
 
-void Aggregator::dump_stats(FILE *fp)
+void Aggregator::dump_stats(void)
 {
     //timestamp in ms
     uint64_t ts = get_time_ms();
 
     for(auto it = antenna_stat.begin(); it != antenna_stat.end(); it++)
     {
-        fprintf(fp, "%" PRIu64 "\tRX_ANT\t%u:%u:%u\t%" PRIx64 "\t%d" ":%d:%d:%d" ":%d:%d:%d\n",
+        IPC_MSG("%" PRIu64 "\tRX_ANT\t%u:%u:%u\t%" PRIx64 "\t%d" ":%d:%d:%d" ":%d:%d:%d\n",
                 ts, it->first.freq, it->first.mcs_index, it->first.bandwidth, it->first.antenna_id, it->second.count_all,
                 it->second.rssi_min, it->second.rssi_sum / it->second.count_all, it->second.rssi_max,
                 it->second.snr_min, it->second.snr_sum / it->second.count_all, it->second.snr_max);
     }
 
-    fprintf(fp, "%" PRIu64 "\tPKT\t%u:%u:%u:%u:%u:%u:%u:%u:%u\n", ts, count_p_all, count_b_all, count_p_dec_err,
-            count_p_dec_ok, count_p_fec_recovered, count_p_lost, count_p_bad, count_p_outgoing, count_b_outgoing);
-    fflush(fp);
+    IPC_MSG("%" PRIu64 "\tPKT\t%u:%u:%u:%u:%u:%u:%u:%u:%u:%u:%u\n", ts,
+            count_p_all, count_b_all,                    // incoming
+            count_p_dec_err,                             // decryption
+            count_p_session, count_p_data,               // classification
+            (uint32_t)count_p_uniq.size(),               // unique check
+            count_p_fec_recovered, count_p_lost,         // fec recovering
+            count_p_bad,                                 // internal errors
+            count_p_outgoing, count_b_outgoing);         // outgoing
+    IPC_MSG_SEND();
 
     if(count_p_override)
     {
-        fprintf(stderr, "%u block overrides\n", count_p_override);
+        WFB_ERR("%u block overrides\n", count_p_override);
     }
 
     if(count_p_lost)
     {
-        fprintf(stderr, "%u packets lost\n", count_p_lost);
+        WFB_ERR("%u packets lost\n", count_p_lost);
     }
 
     clear_stats();
@@ -537,6 +572,8 @@ void Aggregator::process_packet(const uint8_t *buf, size_t size, uint8_t wlan_id
                                 uint8_t bandwidth, sockaddr_in *sockaddr)
 {
     uint8_t session_tmp[MAX_SESSION_PACKET_SIZE - crypto_box_MACBYTES - sizeof(wsession_hdr_t)];
+    uint8_t new_session_hash[sizeof(session_hash)];
+
     wsession_data_t* new_session_data = NULL;
     //size_t new_session_tags_size = 0;
 
@@ -547,7 +584,7 @@ void Aggregator::process_packet(const uint8_t *buf, size_t size, uint8_t wlan_id
 
     if (size > MAX_FORWARDER_PACKET_SIZE)
     {
-        fprintf(stderr, "Long packet (fec payload)\n");
+        WFB_ERR("Long packet (fec payload)\n");
         count_p_bad += 1;
         return;
     }
@@ -555,9 +592,9 @@ void Aggregator::process_packet(const uint8_t *buf, size_t size, uint8_t wlan_id
     switch(buf[0])
     {
     case WFB_PACKET_DATA:
-        if(size < sizeof(wblock_hdr_t) + sizeof(wpacket_hdr_t))
+        if(size < sizeof(wblock_hdr_t) + crypto_aead_chacha20poly1305_ABYTES + sizeof(wpacket_hdr_t))
         {
-            fprintf(stderr, "Short packet (fec header)\n");
+            WFB_ERR("Short packet (fec header)\n");
             count_p_bad += 1;
             return;
         }
@@ -569,8 +606,26 @@ void Aggregator::process_packet(const uint8_t *buf, size_t size, uint8_t wlan_id
         if(size < sizeof(wsession_hdr_t) + sizeof(wsession_data_t) + crypto_box_MACBYTES || \
            size > MAX_SESSION_PACKET_SIZE)
         {
-            fprintf(stderr, "Invalid session key packet\n");
+            WFB_ERR("Invalid session key packet\n");
             count_p_bad += 1;
+            return;
+        }
+
+        if(crypto_generichash(new_session_hash,
+                              sizeof(new_session_hash),
+                              buf + sizeof(wsession_hdr_t),
+                              size - sizeof(wsession_hdr_t),
+                              ((wsession_hdr_t*)buf)->session_nonce,
+                              sizeof(((wsession_hdr_t*)buf)->session_nonce)) != 0)
+        {
+            // Should newer happened
+            assert(0);
+        }
+
+        if (memcmp(session_hash, new_session_hash, sizeof(session_hash)) == 0)
+        {
+            // Session is equal to current so we can ignore it
+            count_p_session += 1;
             return;
         }
 
@@ -580,7 +635,7 @@ void Aggregator::process_packet(const uint8_t *buf, size_t size, uint8_t wlan_id
                                 ((wsession_hdr_t*)buf)->session_nonce,
                                 tx_publickey, rx_secretkey) != 0)
         {
-            fprintf(stderr, "Unable to decrypt session key\n");
+            WFB_ERR("Unable to decrypt session key\n");
             count_p_dec_err += 1;
             return;
         }
@@ -589,41 +644,44 @@ void Aggregator::process_packet(const uint8_t *buf, size_t size, uint8_t wlan_id
 
         if (be64toh(new_session_data->epoch) < epoch)
         {
-            fprintf(stderr, "Session epoch doesn't match: %" PRIu64 " < %" PRIu64 "\n", be64toh(new_session_data->epoch), epoch);
+            WFB_ERR("Session epoch doesn't match: %" PRIu64 " < %" PRIu64 "\n", be64toh(new_session_data->epoch), epoch);
             count_p_dec_err += 1;
             return;
         }
 
         if (be32toh(new_session_data->channel_id) != channel_id)
         {
-            fprintf(stderr, "Session channel_id doesn't match: %u != %u\n", be32toh(new_session_data->channel_id), channel_id);
+            WFB_ERR("Session channel_id doesn't match: %u != %u\n", be32toh(new_session_data->channel_id), channel_id);
             count_p_dec_err += 1;
             return;
         }
 
         if (new_session_data->fec_type != WFB_FEC_VDM_RS)
         {
-            fprintf(stderr, "Unsupported FEC codec type: %d\n", new_session_data->fec_type);
+            WFB_ERR("Unsupported FEC codec type: %d\n", new_session_data->fec_type);
             count_p_dec_err += 1;
             return;
         }
 
         if (new_session_data->n < 1)
         {
-            fprintf(stderr, "Invalid FEC N: %d\n", new_session_data->n);
+            WFB_ERR("Invalid FEC N: %d\n", new_session_data->n);
             count_p_dec_err += 1;
             return;
         }
 
         if (new_session_data->k < 1 || new_session_data->k > new_session_data->n)
         {
-            fprintf(stderr, "Invalid FEC K: %d\n", new_session_data->k);
+            WFB_ERR("Invalid FEC K: %d\n", new_session_data->k);
             count_p_dec_err += 1;
             return;
         }
 
-        count_p_dec_ok += 1;
-        log_rssi(sockaddr, wlan_idx, antenna, rssi, noise, freq, mcs_index, bandwidth);
+        count_p_session += 1;
+
+        // Ignore RSSI (and per-card rx counters) for session packets to simplify calculation
+        // of lost packets because session packets doesn't have any serial number and it is
+        // too hard to calculate number of unique session packets
 
         if (memcmp(session_key, new_session_data->session_key, sizeof(session_key)) != 0)
         {
@@ -637,15 +695,17 @@ void Aggregator::process_packet(const uint8_t *buf, size_t size, uint8_t wlan_id
 
             init_fec(new_session_data->k, new_session_data->n);
 
-            fprintf(stdout, "%" PRIu64 "\tSESSION\t%" PRIu64 ":%u:%d:%d\n", get_time_ms(), epoch, WFB_FEC_VDM_RS, fec_k, fec_n);
-            fflush(stdout);
-
+            IPC_MSG("%" PRIu64 "\tSESSION\t%" PRIu64 ":%u:%d:%d\n", get_time_ms(), epoch, WFB_FEC_VDM_RS, fec_k, fec_n);
+            IPC_MSG_SEND();
         }
+
+        // Cache already processed session
+        memcpy(session_hash, new_session_hash, sizeof(session_hash));
 
         return;
 
     default:
-        fprintf(stderr, "Unknown packet type 0x%x\n", buf[0]);
+        WFB_ERR("Unknown packet type 0x%x\n", buf[0]);
         count_p_bad += 1;
         return;
     }
@@ -661,30 +721,33 @@ void Aggregator::process_packet(const uint8_t *buf, size_t size, uint8_t wlan_id
                                              sizeof(wblock_hdr_t),
                                              (uint8_t*)(&(block_hdr->data_nonce)), session_key) != 0)
     {
-        fprintf(stderr, "Unable to decrypt packet #0x%" PRIx64 "\n", be64toh(block_hdr->data_nonce));
+        WFB_ERR("Unable to decrypt packet #0x%" PRIx64 "\n", be64toh(block_hdr->data_nonce));
         count_p_dec_err += 1;
         return;
     }
 
-    count_p_dec_ok += 1;
+    count_p_data += 1;
     log_rssi(sockaddr, wlan_idx, antenna, rssi, noise, freq, mcs_index, bandwidth);
 
+    assert(decrypted_len >= sizeof(wpacket_hdr_t));
     assert(decrypted_len <= MAX_FEC_PAYLOAD);
 
     uint64_t block_idx = be64toh(block_hdr->data_nonce) >> 8;
     uint8_t fragment_idx = (uint8_t)(be64toh(block_hdr->data_nonce) & 0xff);
 
+    count_p_uniq.insert(be64toh(block_hdr->data_nonce));
+
     // Should never happend due to generating new session key on tx side
     if (block_idx > MAX_BLOCK_IDX)
     {
-        fprintf(stderr, "block_idx overflow\n");
+        WFB_ERR("block_idx overflow\n");
         count_p_bad += 1;
         return;
     }
 
     if (fragment_idx >= fec_n)
     {
-        fprintf(stderr, "Invalid fragment_idx: %d\n", fragment_idx);
+        WFB_ERR("Invalid fragment_idx: %d\n", fragment_idx);
         count_p_bad += 1;
         return;
     }
@@ -702,7 +765,7 @@ void Aggregator::process_packet(const uint8_t *buf, size_t size, uint8_t wlan_id
     memset(p->fragments[fragment_idx], '\0', MAX_FEC_PAYLOAD);
     memcpy(p->fragments[fragment_idx], decrypted, decrypted_len);
 
-    p->fragment_map[fragment_idx] = 1;
+    p->fragment_map[fragment_idx] = decrypted_len;
     p->has_fragments += 1;
 
     // Check if we use current (oldest) block
@@ -757,6 +820,8 @@ void Aggregator::process_packet(const uint8_t *buf, size_t size, uint8_t wlan_id
         {
             if(! p->fragment_map[f_idx])
             {
+                uint32_t fec_count = 0;
+
                 //Recover missed fragments using FEC
                 apply_fec(ring_idx);
 
@@ -765,8 +830,14 @@ void Aggregator::process_packet(const uint8_t *buf, size_t size, uint8_t wlan_id
                 {
                     if(! p->fragment_map[f_idx])
                     {
-                        count_p_fec_recovered += 1;
+                        fec_count += 1;
                     }
+                }
+
+                if(fec_count)
+                {
+                    count_p_fec_recovered += fec_count;
+                    WFB_DBG("FEC recovered %u packets\n", fec_count);
                 }
                 break;
             }
@@ -795,19 +866,27 @@ void Aggregator::send_packet(int ring_idx, int fragment_idx)
 
     if (packet_seq > seq + 1 && seq > 0)
     {
-        count_p_lost += (packet_seq - seq - 1);
+        uint32_t lost_count = packet_seq - seq - 1;
+        ANDROID_IPC_MSG("PKT_LOST\t%d", lost_count);
+        count_p_lost += lost_count;
+
+        // Immediate packet loss notification
+        if (packet_loss_listener_ != NULL)
+        {
+            packet_loss_listener_->on_packet_loss(lost_count, seq, packet_seq);
+        }
     }
 
     seq = packet_seq;
 
     if(packet_size > MAX_PAYLOAD_SIZE)
     {
-        fprintf(stderr, "Corrupted packet %u\n", seq);
+        WFB_ERR("Corrupted packet %u\n", seq);
         count_p_bad += 1;
     }
     else if(!(flags & WFB_PACKET_FEC_ONLY))
     {
-        send(sockfd, payload, packet_size, MSG_DONTWAIT);
+        send_to_socket(payload, packet_size);
         count_p_outgoing += 1;
         count_b_outgoing += packet_size;
     }
@@ -825,6 +904,7 @@ void Aggregator::apply_fec(int ring_idx)
     uint8_t *out_blocks[fec_n - fec_k];
     int j = fec_k;
     int ob_idx = 0;
+    size_t max_packet_size = 0;
 
     for(int i=0; i < fec_k; i++)
     {
@@ -832,41 +912,108 @@ void Aggregator::apply_fec(int ring_idx)
         {
             in_blocks[i] = rx_ring[ring_idx].fragments[i];
             index[i] = i;
-        }else
+        }
+        else
         {
-            for(;j < fec_n; j++)
+            while(j < fec_n && ! rx_ring[ring_idx].fragment_map[j])
             {
-                if(rx_ring[ring_idx].fragment_map[j])
-                {
-                    in_blocks[i] = rx_ring[ring_idx].fragments[j];
-                    out_blocks[ob_idx++] = rx_ring[ring_idx].fragments[i];
-                    index[i] = j;
-                    j++;
-                    break;
-                }
+                j++;
             }
+
+            assert(j < fec_n);
+            // FEC packets always have max size between packets in block
+            max_packet_size = max(max_packet_size, rx_ring[ring_idx].fragment_map[j]);
+            in_blocks[i] = rx_ring[ring_idx].fragments[j];
+            out_blocks[ob_idx++] = rx_ring[ring_idx].fragments[i];
+            index[i] = j++;
         }
     }
-    fec_decode(fec_p, (const uint8_t**)in_blocks, out_blocks, index, MAX_FEC_PAYLOAD);
+
+    assert(max_packet_size > 0);
+    assert(max_packet_size <= MAX_FEC_PAYLOAD);
+
+    zfex_status_code_t rc = fec_decode_simd(fec_p, (const uint8_t**)in_blocks, out_blocks, index, ZFEX_ROUND_UP_SIMD(max_packet_size));
+    assert(rc == ZFEX_SC_OK);
 }
 
-void radio_loop(int argc, char* const *argv, int optind, uint32_t channel_id, shared_ptr<BaseAggregator> agg, int log_interval)
+AggregatorUDPv4::AggregatorUDPv4(const std::string &client_addr, int client_port, const std::string &keypair, uint64_t epoch, uint32_t channel_id, int snd_buf_size) : \
+    Aggregator(keypair, epoch, channel_id)
+{
+    sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sockfd < 0) throw std::runtime_error(string_format("Error opening socket: %s", strerror(errno)));
+
+    if (snd_buf_size > 0)
+    {
+        if(setsockopt(sockfd, SOL_SOCKET, SO_SNDBUF, (const void *)&snd_buf_size , sizeof(snd_buf_size)) !=0)
+        {
+            close(sockfd);
+            throw runtime_error(string_format("Unable to set SO_SNDBUF: %s", strerror(errno)));
+        }
+    }
+
+    memset(&saddr, '\0', sizeof(saddr));
+    saddr.sin_family = AF_INET;
+    saddr.sin_addr.s_addr = inet_addr(client_addr.c_str());
+    saddr.sin_port = htons((unsigned short)client_port);
+}
+
+AggregatorUDPv4::~AggregatorUDPv4()
+{
+    close(sockfd);
+}
+
+void AggregatorUDPv4::send_to_socket(const uint8_t *payload, uint16_t packet_size)
+{
+    sendto(sockfd, payload, packet_size, MSG_DONTWAIT, (sockaddr*)&saddr, sizeof(saddr));
+}
+
+AggregatorUNIX::AggregatorUNIX(const std::string &socket_path, const std::string &keypair, uint64_t epoch, uint32_t channel_id, int snd_buf_size) : \
+    Aggregator(keypair, epoch, channel_id)
+{
+    sockfd = socket(AF_UNIX, SOCK_DGRAM, 0);
+    if (sockfd < 0) throw std::runtime_error(string_format("Error opening socket: %s", strerror(errno)));
+
+    if (snd_buf_size > 0)
+    {
+        if(setsockopt(sockfd, SOL_SOCKET, SO_SNDBUF, (const void *)&snd_buf_size , sizeof(snd_buf_size)) !=0)
+        {
+            close(sockfd);
+            throw runtime_error(string_format("Unable to set SO_SNDBUF: %s", strerror(errno)));
+        }
+    }
+
+    memset(&saddr, '\0', sizeof(saddr));
+    saddr.sun_family = AF_UNIX;
+    strncpy(saddr.sun_path + 1, socket_path.c_str(), sizeof(saddr.sun_path) - 2);
+}
+
+AggregatorUNIX::~AggregatorUNIX()
+{
+    close(sockfd);
+}
+
+void AggregatorUNIX::send_to_socket(const uint8_t *payload, uint16_t packet_size)
+{
+    sendto(sockfd, payload, packet_size, MSG_DONTWAIT, (sockaddr*)&saddr, sizeof(sa_family_t) + strlen(saddr.sun_path + 1) + 1);
+}
+
+void radio_loop(int argc, char* const *argv, int optind, uint32_t channel_id, unique_ptr<BaseAggregator> &agg, int log_interval, int rcv_buf_size)
 {
     int nfds = argc - optind;
-    uint64_t log_send_ts = 0;
+    uint64_t log_send_ts = get_time_ms();
     struct pollfd fds[MAX_RX_INTERFACES];
-    Receiver* rx[MAX_RX_INTERFACES];
+    unique_ptr<Receiver> rx[MAX_RX_INTERFACES];
 
     if (nfds > MAX_RX_INTERFACES)
     {
-        throw runtime_error(string_format("Too many wifi adapters, increase MAX_RX_INTERFACES"));
+        throw runtime_error(string_format("Too many WiFi adapters, increase MAX_RX_INTERFACES"));
     }
 
     memset(fds, '\0', sizeof(fds));
 
     for(int i = 0; i < nfds; i++)
     {
-        rx[i] = new Receiver(argv[optind + i], i, channel_id, agg.get());
+        rx[i].reset(new Receiver(argv[optind + i], i, channel_id, agg.get(), rcv_buf_size));
         fds[i].fd = rx[i]->getfd();
         fds[i].events = POLLIN;
     }
@@ -884,8 +1031,8 @@ void radio_loop(int argc, char* const *argv, int optind, uint32_t channel_id, sh
         cur_ts = get_time_ms();
         if (cur_ts >= log_send_ts)
         {
-            agg->dump_stats(stdout);
-            log_send_ts = cur_ts + log_interval;
+            agg->dump_stats();
+            log_send_ts = cur_ts + log_interval - ((cur_ts - log_send_ts) % log_interval);
         }
 
         if (rc == 0) continue; // timeout expired
@@ -904,13 +1051,13 @@ void radio_loop(int argc, char* const *argv, int optind, uint32_t channel_id, sh
     }
 }
 
-void network_loop(int srv_port, Aggregator &agg, int log_interval, int rcv_buf_size)
+void network_loop(int srv_port, unique_ptr<BaseAggregator> &agg, int log_interval, int rcv_buf_size)
 {
     wrxfwd_t fwd_hdr;
     struct sockaddr_in sockaddr;
     uint8_t buf[MAX_FORWARDER_PACKET_SIZE];
 
-    uint64_t log_send_ts = 0;
+    uint64_t log_send_ts = get_time_ms();
     struct pollfd fds[1];
     int fd = open_udp_socket_for_rx(srv_port, rcv_buf_size);
 
@@ -931,8 +1078,8 @@ void network_loop(int srv_port, Aggregator &agg, int log_interval, int rcv_buf_s
         cur_ts = get_time_ms();
         if (cur_ts >= log_send_ts)
         {
-            agg.dump_stats(stdout);
-            log_send_ts = cur_ts + log_interval;
+            agg->dump_stats();
+            log_send_ts = cur_ts + log_interval - ((cur_ts - log_send_ts) % log_interval);
         }
 
         if (rc == 0) continue; // timeout expired
@@ -970,13 +1117,12 @@ void network_loop(int srv_port, Aggregator &agg, int log_interval, int rcv_buf_s
 
                 if (rsize < (ssize_t)sizeof(wrxfwd_t))
                 {
-                    fprintf(stderr, "Short packet (rx fwd header)\n");
                     continue;
                 }
-                agg.process_packet(buf, rsize - sizeof(wrxfwd_t),
-                                   fwd_hdr.wlan_idx, fwd_hdr.antenna,
-                                   fwd_hdr.rssi, fwd_hdr.noise, ntohs(fwd_hdr.freq),
-                                   fwd_hdr.mcs_index, fwd_hdr.bandwidth, &sockaddr);
+                agg->process_packet(buf, rsize - sizeof(wrxfwd_t),
+                                    fwd_hdr.wlan_idx, fwd_hdr.antenna,
+                                    fwd_hdr.rssi, fwd_hdr.noise, ntohs(fwd_hdr.freq),
+                                    fwd_hdr.mcs_index, fwd_hdr.bandwidth, &sockaddr);
             }
             if(errno != EWOULDBLOCK) throw runtime_error(string_format("Error receiving packet: %s", strerror(errno)));
         }
@@ -997,10 +1143,12 @@ int main(int argc, char* const *argv)
     string client_addr = "127.0.0.1";
     rx_mode_t rx_mode = LOCAL;
     int rcv_buf = 0;
+    int snd_buf = 0;
 
     string keypair = "rx.key";
+    string unix_socket = "";
 
-    while ((opt = getopt(argc, argv, "K:fa:c:u:p:l:i:e:R:")) != -1) {
+    while ((opt = getopt(argc, argv, "K:fa:c:u:U:p:l:i:e:R:s:")) != -1) {
         switch (opt) {
         case 'K':
             keypair = optarg;
@@ -1018,11 +1166,17 @@ int main(int argc, char* const *argv)
         case 'u':
             client_port = atoi(optarg);
             break;
+        case 'U':
+            unix_socket = string(optarg);
+            break;
         case 'p':
             radio_port = atoi(optarg);
             break;
         case 'R':
             rcv_buf = atoi(optarg);
+            break;
+        case 's':
+            snd_buf = atoi(optarg);
             break;
         case 'l':
             log_interval = atoi(optarg);
@@ -1035,12 +1189,15 @@ int main(int argc, char* const *argv)
             break;
         default: /* '?' */
         show_usage:
-            fprintf(stderr, "Local receiver: %s [-K rx_key] [-c client_addr] [-u client_port] [-p radio_port] [-l log_interval] [-e epoch] [-i link_id] interface1 [interface2] ...\n", argv[0]);
-            fprintf(stderr, "Remote (forwarder): %s -f [-c client_addr] [-u client_port] [-p radio_port] [-i link_id] interface1 [interface2] ...\n", argv[0]);
-            fprintf(stderr, "Remote (aggregator): %s -a server_port [-K rx_key] [-c client_addr] [-R rcv_buf] [-u client_port] [-l log_interval] [-p radio_port] [-e epoch] [-i link_id]\n", argv[0]);
-            fprintf(stderr, "Default: K='%s', connect=%s:%d, link_id=0x%06x, radio_port=%u, epoch=%" PRIu64 ", log_interval=%d, rcv_buf=system_default\n", keypair.c_str(), client_addr.c_str(), client_port, link_id, radio_port, epoch, log_interval);
-            fprintf(stderr, "WFB-ng version %s\n", WFB_VERSION);
-            fprintf(stderr, "WFB-ng home page: <http://wfb-ng.org>\n");
+            WFB_INFO("Local RX: %s [-K rx_key] { [-c client_addr] [-u client_port] | [-U unix_socket] } [-p radio_port]\n"
+                     "             [-R rcv_buf] [-s snd_buf] [-l log_interval] [-e epoch] [-i link_id] interface1 [interface2] ...\n", argv[0]);
+            WFB_INFO("RX forwarder: %s -f [-c client_addr] [-u client_port] [-p radio_port]  [-R rcv_buf] [-s snd_buf]\n"
+                     "                    [-i link_id] interface1 [interface2] ...\n", argv[0]);
+            WFB_INFO("RX aggregator: %s -a server_port [-K rx_key] { [-c client_addr] [-u client_port] | [-U unix_socket] } [-R rcv_buf]\n"
+                     "                                 [-s snd_buf] [-l log_interval] [-p radio_port] [-e epoch] [-i link_id]\n", argv[0]);
+            WFB_INFO("Default: K='%s', connect=%s:%d, link_id=0x%06x, radio_port=%u, epoch=%" PRIu64 ", log_interval=%d, rcv_buf=system_default, snd_buf=system_default\n", keypair.c_str(), client_addr.c_str(), client_port, link_id, radio_port, epoch, log_interval);
+            WFB_INFO("WFB-ng version %s, FEC: %s\n", WFB_VERSION, zfex_opt);
+            WFB_INFO("WFB-ng home page: <http://wfb-ng.org>\n");
             exit(1);
         }
     }
@@ -1051,7 +1208,7 @@ int main(int argc, char* const *argv)
 
         if ((fd = open("/dev/random", O_RDONLY)) != -1) {
             if (ioctl(fd, RNDGETENTCNT, &c) == 0 && c < 160) {
-                fprintf(stderr, "This system doesn't provide enough entropy to quickly generate high-quality random numbers.\n"
+                WFB_ERR("This system doesn't provide enough entropy to quickly generate high-quality random numbers.\n"
                         "Installing the rng-utils/rng-tools, jitterentropy or haveged packages may help.\n"
                         "On virtualized Linux environments, also consider using virtio-rng.\n"
                         "The service will not start until enough entropy has been collected.\n");
@@ -1062,37 +1219,60 @@ int main(int argc, char* const *argv)
 
     if (sodium_init() < 0)
     {
-        fprintf(stderr, "Libsodium init failed\n");
+        WFB_ERR("Libsodium init failed\n");
         return 1;
     }
 
     try
     {
         uint32_t channel_id = (link_id << 8) + radio_port;
-        if (rx_mode == LOCAL || rx_mode == FORWARDER)
-        {
-            if (optind >= argc) goto show_usage;
 
-            shared_ptr<BaseAggregator> agg;
-            if(rx_mode == LOCAL){
-                agg = shared_ptr<Aggregator>(new Aggregator(client_addr, client_port, keypair, epoch, channel_id));
-            }else{
-                agg = shared_ptr<Forwarder>(new Forwarder(client_addr, client_port));
-            }
-
-            radio_loop(argc, argv, optind, channel_id, agg, log_interval);
-        }else if(rx_mode == AGGREGATOR)
+        // WiFi interface(s) are required for all modes except aggregator
+        if(rx_mode == AGGREGATOR)
         {
             if (optind > argc) goto show_usage;
-            Aggregator agg(client_addr, client_port, keypair, epoch, channel_id);
+        }
+        else
+        {
+            if (optind >= argc) goto show_usage;
+        }
 
-            network_loop(srv_port, agg, log_interval, rcv_buf);
-        }else{
+        unique_ptr<BaseAggregator> agg;
+
+        switch(rx_mode)
+        {
+        case LOCAL:
+        case AGGREGATOR:
+            if(unix_socket.length() > 0)
+            {
+                agg = unique_ptr<AggregatorUNIX>(new AggregatorUNIX(unix_socket, keypair, epoch, channel_id, snd_buf));
+            }
+            else
+            {
+                agg = unique_ptr<AggregatorUDPv4>(new AggregatorUDPv4(client_addr, client_port, keypair, epoch, channel_id, snd_buf));
+            }
+            break;
+
+        case FORWARDER:
+            agg = unique_ptr<Forwarder>(new Forwarder(client_addr, client_port, snd_buf));
+            break;
+
+        default:
             throw runtime_error(string_format("Unknown rx_mode=%d", rx_mode));
         }
-    }catch(runtime_error &e)
+
+        if(rx_mode == AGGREGATOR)
+        {
+            network_loop(srv_port, agg, log_interval, rcv_buf);
+        }
+        else
+        {
+            radio_loop(argc, argv, optind, channel_id, agg, log_interval, rcv_buf);
+        }
+    }
+    catch(runtime_error &e)
     {
-        fprintf(stderr, "Error: %s\n", e.what());
+        WFB_ERR("Error: %s\n", e.what());
         exit(1);
     }
     return 0;

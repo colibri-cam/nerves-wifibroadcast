@@ -1,3 +1,4 @@
+#pragma once
 // -*- C++ -*-
 //
 // Copyright (C) 2017 - 2024 Vasily Evseenko <svpcom@p2ptech.org>
@@ -20,16 +21,26 @@
 #include <unordered_map>
 #include <stdint.h>
 #include <sys/socket.h>
+#include <sys/un.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <stdio.h>
 #include <errno.h>
 #include <string>
+#include <set>
 #include <string.h>
 #include <stdexcept>
 
 #include "wifibroadcast.hpp"
+#include "zfex.h"
 
+// Forward declaration for isolated packet loss notification
+class PacketLossListener
+{
+public:
+    virtual ~PacketLossListener() = default;
+    virtual void on_packet_loss(uint32_t lost_count, uint32_t last_seq, uint32_t new_seq) = 0;
+};
 
 typedef enum {
     LOCAL,
@@ -45,46 +56,29 @@ public:
                                 const int8_t *rssi, const int8_t *noise, uint16_t freq, uint8_t mcs_index,
                                 uint8_t bandwidth, sockaddr_in *sockaddr) = 0;
 
-    virtual void dump_stats(FILE *fp) = 0;
-protected:
-    int open_udp_socket_for_tx(const std::string &client_addr, int client_port)
-    {
-        struct sockaddr_in saddr;
-        int fd = socket(AF_INET, SOCK_DGRAM, 0);
-        if (fd < 0) throw std::runtime_error(string_format("Error opening socket: %s", strerror(errno)));
-
-        memset(&saddr, '\0', sizeof(saddr));
-        saddr.sin_family = AF_INET;
-        saddr.sin_addr.s_addr = inet_addr(client_addr.c_str());
-        saddr.sin_port = htons((unsigned short)client_port);
-
-        if (connect(fd, (struct sockaddr *) &saddr, sizeof(saddr)) < 0)
-        {
-            throw std::runtime_error(string_format("Connect error: %s", strerror(errno)));
-        }
-        return fd;
-    }
+    virtual void dump_stats(void) = 0;
 };
 
 
 class Forwarder : public BaseAggregator
 {
 public:
-    Forwarder(const std::string &client_addr, int client_port);
+    Forwarder(const std::string &client_addr, int client_port, int snd_buf_size);
     virtual ~Forwarder();
     virtual void process_packet(const uint8_t *buf, size_t size, uint8_t wlan_idx, const uint8_t *antenna,
                                 const int8_t *rssi, const int8_t *noise, uint16_t freq, uint8_t mcs_index,
                                 uint8_t bandwidth,sockaddr_in *sockaddr);
-    virtual void dump_stats(FILE *) {}
+    virtual void dump_stats(void) {}
 private:
     int sockfd;
+    struct sockaddr_in saddr;
 };
 
 
 typedef struct {
     uint64_t block_idx;
     uint8_t** fragments;
-    uint8_t *fragment_map;
+    size_t *fragment_map;
     uint8_t fragment_to_send_idx;
     uint8_t has_fragments;
 } rx_ring_item_t;
@@ -175,12 +169,15 @@ typedef std::unordered_map<rxAntennaKey, rxAntennaItem> rx_antenna_stat_t;
 class Aggregator : public BaseAggregator
 {
 public:
-    Aggregator(const std::string &client_addr, int client_port, const std::string &keypair, uint64_t epoch, uint32_t channel_id);
+    Aggregator(const std::string &keypair, uint64_t epoch, uint32_t channel_id);
     virtual ~Aggregator();
     virtual void process_packet(const uint8_t *buf, size_t size, uint8_t wlan_idx, const uint8_t *antenna,
                                 const int8_t *rssi, const int8_t *noise, uint16_t freq, uint8_t mcs_index,
                                 uint8_t bandwidth, sockaddr_in *sockaddr);
-    virtual void dump_stats(FILE *fp);
+    virtual void dump_stats(void);
+
+    // Packet loss listener for immediate notifications
+    void set_packet_loss_listener(PacketLossListener* listener) { packet_loss_listener_ = listener; }
 
     // Make stats public for android userspace receiver
     void clear_stats(void)
@@ -189,7 +186,9 @@ public:
         count_p_all = 0;
         count_b_all = 0;
         count_p_dec_err = 0;
-        count_p_dec_ok = 0;
+        count_p_session = 0;
+        count_p_data = 0;
+        count_p_uniq.clear();
         count_p_fec_recovered = 0;
         count_p_lost = 0;
         count_p_bad = 0;
@@ -202,13 +201,18 @@ public:
     uint32_t count_p_all;
     uint32_t count_b_all;
     uint32_t count_p_dec_err;
-    uint32_t count_p_dec_ok;
+    uint32_t count_p_session;
+    uint32_t count_p_data;
+    std::set<uint64_t> count_p_uniq;
     uint32_t count_p_fec_recovered;
     uint32_t count_p_lost;
     uint32_t count_p_bad;
     uint32_t count_p_override;
     uint32_t count_p_outgoing;
     uint32_t count_b_outgoing;
+
+protected:
+    virtual void send_to_socket(const uint8_t *payload, uint16_t packet_size) = 0;
 
 private:
     Aggregator(const Aggregator&);
@@ -228,7 +232,8 @@ private:
     fec_t* fec_p;
     int fec_k;  // RS number of primary fragments in block
     int fec_n;  // RS total number of fragments in block
-    int sockfd;
+    uint8_t session_hash[crypto_generichash_BYTES];
+
     uint32_t seq;
     rx_ring_item_t rx_ring[RX_RING_SIZE];
     int rx_ring_front; // current packet
@@ -241,12 +246,52 @@ private:
     uint8_t rx_secretkey[crypto_box_SECRETKEYBYTES];
     uint8_t tx_publickey[crypto_box_PUBLICKEYBYTES];
     uint8_t session_key[crypto_aead_chacha20poly1305_KEYBYTES];
+
+    // Packet loss listener for immediate notifications
+    PacketLossListener* packet_loss_listener_ = nullptr;
 };
+
+
+class AggregatorUDPv4 : public Aggregator
+{
+public:
+    AggregatorUDPv4(const std::string &client_addr, int client_port, const std::string &keypair, uint64_t epoch, uint32_t channel_id, int snd_buf_size);
+    virtual ~AggregatorUDPv4();
+
+protected:
+    virtual void send_to_socket(const uint8_t *payload, uint16_t packet_size);
+
+private:
+    AggregatorUDPv4(const AggregatorUDPv4&);
+    AggregatorUDPv4& operator=(const AggregatorUDPv4&);
+
+    int sockfd;
+    struct sockaddr_in saddr;
+};
+
+
+class AggregatorUNIX : public Aggregator
+{
+public:
+    AggregatorUNIX(const std::string &unix_socket, const std::string &keypair, uint64_t epoch, uint32_t channel_id, int snd_buf_size);
+    virtual ~AggregatorUNIX();
+
+protected:
+    virtual void send_to_socket(const uint8_t *payload, uint16_t packet_size);
+
+private:
+    AggregatorUNIX(const AggregatorUNIX&);
+    AggregatorUNIX& operator=(const AggregatorUNIX&);
+
+    int sockfd;
+    struct sockaddr_un saddr;
+};
+
 
 class Receiver
 {
 public:
-    Receiver(const char* wlan, int wlan_idx, uint32_t channel_id, BaseAggregator* agg);
+    Receiver(const char* wlan, int wlan_idx, uint32_t channel_id, BaseAggregator* agg, int rcv_buf_size);
     ~Receiver();
     void loop_iter(void);
     int getfd(void){ return fd; }

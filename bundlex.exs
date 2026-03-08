@@ -19,7 +19,7 @@ defmodule NervesWifibroadcast.BundlexProject do
           "-DWFB_VERSION=\'\"24.8.17.79622-8c81d238\"\'"
         ],
         linker_flags: ["-lrt", "-lsodium"],
-        deps: [nerves_wifibroadcast: :fec, nerves_wifibroadcast: :wifibroadcast],
+        deps: [nerves_wifibroadcast: :zfex, nerves_wifibroadcast: :wifibroadcast],
         interface: :port
       ],
       wfb_rx: [
@@ -33,14 +33,14 @@ defmodule NervesWifibroadcast.BundlexProject do
         linker_flags: ["-lrt", "-lsodium", "-lpcap"],
         deps: [
           nerves_wifibroadcast: :radiotap,
-          nerves_wifibroadcast: :fec,
+          nerves_wifibroadcast: :zfex,
           nerves_wifibroadcast: :wifibroadcast
         ],
         interface: :port
       ],
       wfb_keygen: [
         sources: ["keygen.c"],
-        language: :cpp,
+        language: :c,
         compiler_flags: [
           "-std=gnu99",
           "-fno-strict-aliasing",
@@ -51,7 +51,7 @@ defmodule NervesWifibroadcast.BundlexProject do
       ],
       wfb_tx_cmd: [
         sources: ["tx_cmd.c"],
-        language: :cpp,
+        language: :c,
         compiler_flags: [
           "-std=gnu99",
           "-fno-strict-aliasing",
@@ -79,7 +79,7 @@ defmodule NervesWifibroadcast.BundlexProject do
           "-fno-strict-aliasing",
           "-DWFB_VERSION=\'\"24.8.17.79622-8c81d238\"\'"
         ],
-        deps: [nerves_wifibroadcast: :fec],
+        deps: [nerves_wifibroadcast: :zfex],
         interface: :nif
       ]
     ]
@@ -87,15 +87,18 @@ defmodule NervesWifibroadcast.BundlexProject do
 
   defp libs() do
     [
-      fec: [
-        sources: ["fec.c"],
+      zfex: [
+        sources: ["zfex.c"],
         language: :c,
         compiler_flags: [
           "-std=gnu99",
           "-fno-strict-aliasing",
+          "-DZFEX_UNROLL_ADDMUL_SIMD=8",
+          "-DZFEX_INLINE_ADDMUL",
+          "-DZFEX_INLINE_ADDMUL_SIMD",
           "-DWFB_VERSION=\'\"24.8.17.79622-8c81d238\"\'"
         ],
-        linker_flags: ["-lrt", "-lsodium"],
+        linker_flags: [],
         interface: nil
       ],
       radiotap: [

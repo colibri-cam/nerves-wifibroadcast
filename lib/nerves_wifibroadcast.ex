@@ -47,7 +47,9 @@ defmodule NervesWifibroadcast do
   """
   def start_wfb_tx(card, opts \\ []) do
     defaults = [port: 5001, radio_id: 0, key: "drone.key", mcs_i: 0, bandwidth: 20]
-    args = defaults |> Keyword.merge(opts) |> Enum.flat_map(&prepare_args(&1)) |> Enum.concat([card])
+
+    args =
+      defaults |> Keyword.merge(opts) |> Enum.flat_map(&prepare_args(&1)) |> Enum.concat([card])
 
     cmd_path = bundlex_path(:wfb_tx)
     {:ok, log_device_pid} = StringIO.open("")
@@ -63,9 +65,12 @@ defmodule NervesWifibroadcast do
   """
   def start_wfb_rx(card, opts \\ [])
   def start_wfb_rx(card, opts) when is_binary(card), do: start_wfb_rx([card], opts)
+
   def start_wfb_rx(cards, opts) do
-    defaults = [port: 5001, radio_id: 0, key: "gs.key", link_id: 7669206]
-    args = defaults |> Keyword.merge(opts) |> Enum.flat_map(&prepare_args(&1)) |> Enum.concat(cards)
+    defaults = [port: 5001, radio_id: 0, key: "gs.key", link_id: 7_669_206]
+
+    args =
+      defaults |> Keyword.merge(opts) |> Enum.flat_map(&prepare_args(&1)) |> Enum.concat(cards)
 
     cmd_path = bundlex_path(:wfb_rx)
     {:ok, log_device_pid} = StringIO.open("")
@@ -83,7 +88,6 @@ defmodule NervesWifibroadcast do
   defp prepare_args({:mcs_i, mcs_i}), do: ["-M", to_string(mcs_i)]
   defp prepare_args({:bandwidth, bandwidth}), do: ["-B", to_string(bandwidth)]
 
-
   defp bundlex_path(native_name) do
     app = Application.get_application(__MODULE__)
 
@@ -93,7 +97,7 @@ defmodule NervesWifibroadcast do
   defp mt_cmd(cmd, args \\ [], options \\ []) do
     case MuonTrap.cmd(cmd, args, options) do
       {output, 0} -> {:ok, output}
-      {output, err_code} -> {:error, "Error code: #{err_code} \n #{inspect output}"}
+      {output, err_code} -> {:error, "Error code: #{err_code} \n #{inspect(output)}"}
     end
   end
 end

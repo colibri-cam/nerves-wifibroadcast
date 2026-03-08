@@ -103,7 +103,6 @@ defmodule RadiotapDecoder do
           {idx + 1, new_acc, extended?}
       end)
 
-
     if extended? do
       IO.puts("Radiotapheader is extended")
       <<more_flags::binary-size(4), rest::binary>> = rest

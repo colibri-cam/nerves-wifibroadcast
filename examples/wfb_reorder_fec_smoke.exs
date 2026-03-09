@@ -279,7 +279,6 @@ defmodule NervesWifibroadcast.Examples.WfbReorderFecSmoke.Pipeline do
   alias NervesWifibroadcast.Examples.WfbReorderFecSmoke.ChannelSink
   alias NervesWifibroadcast.Membrane.Radio.Source
   alias NervesWifibroadcast.Membrane.WFB.Decrypt
-  alias NervesWifibroadcast.Membrane.WFB.Ingress
   alias NervesWifibroadcast.Membrane.WFB.ReorderFec
 
   def start_link(opts) do
@@ -292,19 +291,24 @@ defmodule NervesWifibroadcast.Examples.WfbReorderFecSmoke.Pipeline do
     radio_ports = Keyword.fetch!(opts, :radio_ports)
 
     source_opts =
-      Keyword.take(opts, [:interfaces, :frame_buffer_size, :max_read_burst, :max_queue_size])
+      Keyword.take(opts, [
+        :interfaces,
+        :frame_buffer_size,
+        :max_read_burst,
+        :max_queue_size,
+        :link_id,
+        :radio_port,
+        :radio_ports
+      ])
 
     decrypt_opts = Keyword.take(opts, [:key_path, :min_epoch])
     reorder_opts = Keyword.take(opts, [:ring_size])
     sink_opts = Keyword.take(opts, [:print_first, :summary_every_ms, :max_preview_bytes])
 
     spec =
-      [
-        child(:source, struct(Source, source_opts))
-        |> child(:ingress, struct(Ingress, link_id: link_id, radio_ports: radio_ports))
-      ] ++
+      [child(:source, struct(Source, source_opts))] ++
         Enum.map(radio_ports, fn radio_port ->
-          get_child(:ingress)
+          get_child(:source)
           |> via_out(Membrane.Pad.ref(:output, radio_port))
           |> child({:decrypt, radio_port}, struct(Decrypt, decrypt_opts))
           |> child({:reorder_fec, radio_port}, struct(ReorderFec, reorder_opts))
@@ -328,7 +332,7 @@ defmodule NervesWifibroadcast.Examples.WfbReorderFecSmoke.Pipeline do
       MapSet.difference(requested, state.linked_radio_ports) |> MapSet.to_list() |> Enum.sort()
 
     if unknown == [] do
-      {[notify_child: {:ingress, {:set_radio_ports, radio_ports}}, reply: :ok], state}
+      {[notify_child: {:source, {:set_radio_ports, radio_ports}}, reply: :ok], state}
     else
       {[reply: {:error, {:unlinked_radio_ports, unknown}}], state}
     end

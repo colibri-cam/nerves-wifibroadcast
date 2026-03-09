@@ -14,7 +14,9 @@ defmodule NervesWifibroadcast.Membrane.WFB.Decrypt do
   alias NervesWifibroadcast.WFB.Keys
   alias NervesWifibroadcast.WFB.Session
 
+  @aead_abytes 16
   @max_block_idx (1 <<< 55) - 1
+  @min_data_packet_size 9 + @aead_abytes + 3
 
   def_options(
     key_path: [spec: String.t() | nil, default: "gs.key"],
@@ -40,15 +42,18 @@ defmodule NervesWifibroadcast.Membrane.WFB.Decrypt do
     keys = load_keys!(opts)
 
     state = %{
+      accepted_session_packet: nil,
       counters: %{
         data_decrypt_errors: 0,
         data_without_session_drops: 0,
+        duplicate_session_drops: 0,
         invalid_block_drops: 0,
         invalid_fec_drops: 0,
         invalid_session_data_drops: 0,
         old_epoch_drops: 0,
         passed_packets: 0,
         session_decrypt_errors: 0,
+        short_data_packet_drops: 0,
         short_plaintext_drops: 0,
         unknown_packet_type_drops: 0,
         wrong_channel_id_drops: 0
@@ -72,7 +77,7 @@ defmodule NervesWifibroadcast.Membrane.WFB.Decrypt do
   @impl true
   def handle_stream_format(:input, %StreamFormat{} = stream_format, _ctx, state) do
     actions = maybe_stream_format_action(stream_format, state.current_session)
-    {actions, %{state | input_stream_format: stream_format}}
+    {actions, %{state | accepted_session_packet: nil, input_stream_format: stream_format}}
   end
 
   @impl true
@@ -88,32 +93,36 @@ defmodule NervesWifibroadcast.Membrane.WFB.Decrypt do
   end
 
   defp handle_session_packet(%Buffer{} = buffer, state) do
-    case CryptoNif.open_session(buffer.payload, state.keys.box_key) do
-      {:ok, plaintext} ->
-        with {:ok, session} <- Session.parse(plaintext),
-             :ok <- validate_session(session, buffer, state) do
-          maybe_install_session(state, session)
-        else
-          {:error, :invalid_session_data} ->
-            {notify_session_issue(state, buffer, :invalid_session_data),
-             increment_counter(state, :invalid_session_data_drops)}
+    if duplicate_accepted_session_packet?(state, buffer.payload) do
+      {[], increment_counter(state, :duplicate_session_drops)}
+    else
+      case CryptoNif.open_session(buffer.payload, state.keys.box_key) do
+        {:ok, plaintext} ->
+          with {:ok, session} <- Session.parse(plaintext),
+               :ok <- validate_session(session, buffer, state) do
+            maybe_install_session(state, session, buffer.payload)
+          else
+            {:error, :invalid_session_data} ->
+              {notify_session_issue(state, buffer, :invalid_session_data),
+               increment_counter(state, :invalid_session_data_drops)}
 
-          {:error, :old_epoch} ->
-            {notify_session_issue(state, buffer, :old_epoch),
-             increment_counter(state, :old_epoch_drops)}
+            {:error, :old_epoch} ->
+              {notify_session_issue(state, buffer, :old_epoch),
+               increment_counter(state, :old_epoch_drops)}
 
-          {:error, :wrong_channel_id} ->
-            {notify_session_issue(state, buffer, :wrong_channel_id),
-             increment_counter(state, :wrong_channel_id_drops)}
+            {:error, :wrong_channel_id} ->
+              {notify_session_issue(state, buffer, :wrong_channel_id),
+               increment_counter(state, :wrong_channel_id_drops)}
 
-          {:error, :invalid_fec} ->
-            {notify_session_issue(state, buffer, :invalid_fec),
-             increment_counter(state, :invalid_fec_drops)}
-        end
+            {:error, :invalid_fec} ->
+              {notify_session_issue(state, buffer, :invalid_fec),
+               increment_counter(state, :invalid_fec_drops)}
+          end
 
-      :error ->
-        {notify_session_issue(state, buffer, :decrypt_error),
-         increment_counter(state, :session_decrypt_errors)}
+        :error ->
+          {notify_session_issue(state, buffer, :decrypt_error),
+           increment_counter(state, :session_decrypt_errors)}
+      end
     end
   end
 
@@ -127,6 +136,9 @@ defmodule NervesWifibroadcast.Membrane.WFB.Decrypt do
     block_idx = get_in(buffer.metadata, [:wfb, :block_idx])
 
     cond do
+      byte_size(buffer.payload) < @min_data_packet_size ->
+        {[], increment_counter(state, :short_data_packet_drops)}
+
       not is_integer(block_idx) or block_idx < 0 or block_idx > @max_block_idx ->
         {[], increment_counter(state, :invalid_block_drops)}
 
@@ -156,11 +168,12 @@ defmodule NervesWifibroadcast.Membrane.WFB.Decrypt do
     end
   end
 
-  defp maybe_install_session(state, %Session{} = session) do
+  defp maybe_install_session(state, %Session{} = session, accepted_session_packet) do
     if session_key_changed?(state.current_session, session) do
       next_state = %{
         state
         | current_session: session,
+          accepted_session_packet: accepted_session_packet,
           epoch_floor: session.epoch
       }
 
@@ -173,7 +186,7 @@ defmodule NervesWifibroadcast.Membrane.WFB.Decrypt do
 
       {actions, next_state}
     else
-      {[], state}
+      {[], %{state | accepted_session_packet: accepted_session_packet}}
     end
   end
 
@@ -272,6 +285,10 @@ defmodule NervesWifibroadcast.Membrane.WFB.Decrypt do
 
   defp notify_session_issue(state, buffer, reason) do
     [notify_parent: {:wfb_session_rejected, reason, session_issue_context(state, buffer)}]
+  end
+
+  defp duplicate_accepted_session_packet?(state, packet) do
+    is_binary(state.accepted_session_packet) and state.accepted_session_packet == packet
   end
 
   defp session_notification(%Session{} = session, input_stream_format) do

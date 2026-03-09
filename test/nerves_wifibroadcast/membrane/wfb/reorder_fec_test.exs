@@ -165,7 +165,17 @@ defmodule NervesWifibroadcast.Membrane.WFB.ReorderFecTest do
                state
              )
 
-    assert [buffer: {:output, buffer0}, buffer: {:output, buffer1}] = actions
+    assert [
+             notify_parent: {:wfb_packet_loss, loss_notification},
+             buffer: {:output, buffer0},
+             buffer: {:output, buffer1}
+           ] = actions
+
+    assert loss_notification.lost_count == 1
+    assert loss_notification.last_ordered_seq == 200
+    assert loss_notification.ordered_seq == 202
+    assert loss_notification.block_idx == 101
+    assert loss_notification.fragment_idx == 0
     assert buffer0.payload == new_shard0
     assert buffer1.payload == new_shard1
     assert state.counters.lost_source_shards == 1
@@ -194,6 +204,48 @@ defmodule NervesWifibroadcast.Membrane.WFB.ReorderFecTest do
              )
 
     assert state.counters.duplicate_fragments == 1
+  end
+
+  test "emits opt-in periodic stats notifications" do
+    stream_format = WFBFixtures.decrypted_stream_format(fec_k: 2, fec_n: 3)
+    shard0 = WFBFixtures.source_shard("one")
+    state = reorder_state(stats_interval_ms: 1_000)
+
+    assert {[start_timer: {:stats, _interval}], state} = ReorderFec.handle_playing(%{}, state)
+
+    assert {[stream_format: {:output, %OrderedShardStreamFormat{}}], state} =
+             ReorderFec.handle_stream_format(:input, stream_format, %{}, state)
+
+    assert {[buffer: {:output, _buffer0}], state} =
+             ReorderFec.handle_buffer(
+               :input,
+               WFBFixtures.decrypted_buffer(shard0, 10, 0),
+               %{},
+               state
+             )
+
+    assert {[notify_parent: {:wfb_reorder_fec_stats, stats}], state} =
+             ReorderFec.handle_tick(:stats, %{}, state)
+
+    assert stats.channel_id == stream_format.channel_id
+    assert stats.epoch == stream_format.epoch
+    assert stats.link_id == stream_format.link_id
+    assert stats.radio_port == stream_format.radio_port
+    assert stats.interfaces == stream_format.interfaces
+    assert stats.blocks_in_ring == 1
+    assert stats.last_known_block == 10
+    assert stats.last_emitted_seq == 20
+    assert stats.stats_interval_ms == 1_000
+    assert stats.counters.emitted_source_shards == 1
+    assert stats.counters.lost_source_shards == 0
+    assert stats.counters.fec_recovered_fragments == 0
+
+    assert {[notify_parent: {:wfb_reorder_fec_stats, next_stats}], _state} =
+             ReorderFec.handle_tick(:stats, %{}, state)
+
+    assert next_stats.counters.emitted_source_shards == 0
+    assert next_stats.counters.lost_source_shards == 0
+    assert next_stats.blocks_in_ring == 1
   end
 
   defp reorder_state(opts \\ []) do

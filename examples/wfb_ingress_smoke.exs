@@ -244,7 +244,6 @@ defmodule NervesWifibroadcast.Examples.WfbIngressSmoke.Pipeline do
 
   alias NervesWifibroadcast.Examples.WfbIngressSmoke.ChannelSink
   alias NervesWifibroadcast.Membrane.Radio.Source
-  alias NervesWifibroadcast.Membrane.WFB.Ingress
 
   def start_link(opts) do
     Membrane.Pipeline.start_link(__MODULE__, opts, name: __MODULE__)
@@ -256,17 +255,22 @@ defmodule NervesWifibroadcast.Examples.WfbIngressSmoke.Pipeline do
     radio_ports = Keyword.fetch!(opts, :radio_ports)
 
     source_opts =
-      Keyword.take(opts, [:interfaces, :frame_buffer_size, :max_read_burst, :max_queue_size])
+      Keyword.take(opts, [
+        :interfaces,
+        :frame_buffer_size,
+        :max_read_burst,
+        :max_queue_size,
+        :link_id,
+        :radio_port,
+        :radio_ports
+      ])
 
     sink_opts = Keyword.take(opts, [:print_first, :summary_every_ms, :max_preview_bytes])
 
     spec =
-      [
-        child(:source, struct(Source, source_opts))
-        |> child(:ingress, struct(Ingress, link_id: link_id, radio_ports: radio_ports))
-      ] ++
+      [child(:source, struct(Source, source_opts))] ++
         Enum.map(radio_ports, fn radio_port ->
-          get_child(:ingress)
+          get_child(:source)
           |> via_out(Membrane.Pad.ref(:output, radio_port))
           |> child(
             {:sink, radio_port},
@@ -288,7 +292,7 @@ defmodule NervesWifibroadcast.Examples.WfbIngressSmoke.Pipeline do
       MapSet.difference(requested, state.linked_radio_ports) |> MapSet.to_list() |> Enum.sort()
 
     if unknown == [] do
-      actions = [notify_child: {:ingress, {:set_radio_ports, radio_ports}}, reply: :ok]
+      actions = [notify_child: {:source, {:set_radio_ports, radio_ports}}, reply: :ok]
       {actions, state}
     else
       {[reply: {:error, {:unlinked_radio_ports, unknown}}], state}

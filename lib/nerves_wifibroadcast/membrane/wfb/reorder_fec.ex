@@ -11,13 +11,18 @@ defmodule NervesWifibroadcast.Membrane.WFB.ReorderFec do
   import Bitwise
 
   alias Membrane.Buffer
+  alias Membrane.Time
   alias NervesWifibroadcast.Membrane.WFB.DecryptedStreamFormat
   alias NervesWifibroadcast.Membrane.WFB.OrderedShardStreamFormat
   alias NervesWifibroadcast.WFB.FecNif
 
   @max_block_idx (1 <<< 55) - 1
+  @stats_timer :stats
 
-  def_options(ring_size: [spec: pos_integer(), default: 40])
+  def_options(
+    ring_size: [spec: pos_integer(), default: 40],
+    stats_interval_ms: [spec: pos_integer() | nil, default: nil]
+  )
 
   def_input_pad(:input,
     availability: :always,
@@ -49,6 +54,16 @@ defmodule NervesWifibroadcast.Membrane.WFB.ReorderFec do
       last_known_block: nil,
       order: [],
       ring_size: opts.ring_size,
+      stats_baseline: %{
+        duplicate_fragments: 0,
+        emitted_source_shards: 0,
+        fec_recovered_fragments: 0,
+        invalid_fragment_drops: 0,
+        lost_source_shards: 0,
+        ring_override_count: 0,
+        stale_block_drops: 0
+      },
+      stats_interval_ms: opts.stats_interval_ms,
       blocks: %{}
     }
 
@@ -62,6 +77,14 @@ defmodule NervesWifibroadcast.Membrane.WFB.ReorderFec do
   def handle_event(_pad, event, _ctx, state), do: {[forward: event], state}
 
   @impl true
+  def handle_playing(_ctx, %{stats_interval_ms: interval_ms} = state)
+      when is_integer(interval_ms) do
+    {[start_timer: {@stats_timer, Time.milliseconds(interval_ms)}], state}
+  end
+
+  def handle_playing(_ctx, state), do: {[], state}
+
+  @impl true
   def handle_stream_format(:input, %DecryptedStreamFormat{} = format, _ctx, state) do
     with codec when is_reference(codec) <- FecNif.new(format.fec_k, format.fec_n) do
       next_state =
@@ -71,6 +94,7 @@ defmodule NervesWifibroadcast.Membrane.WFB.ReorderFec do
         |> Map.put(:last_emitted_seq, nil)
         |> Map.put(:last_known_block, nil)
         |> Map.put(:order, [])
+        |> Map.put(:stats_baseline, state.counters)
         |> Map.put(:blocks, %{})
 
       {[stream_format: {:output, output_stream_format(format)}], next_state}
@@ -83,6 +107,14 @@ defmodule NervesWifibroadcast.Membrane.WFB.ReorderFec do
 
   @impl true
   def handle_end_of_stream(:input, _ctx, state), do: {[end_of_stream: :output], state}
+
+  @impl true
+  def handle_tick(@stats_timer, _ctx, %{current_format: nil} = state), do: {[], state}
+
+  def handle_tick(@stats_timer, _ctx, state) do
+    stats = stats_notification(state)
+    {[notify_parent: {:wfb_reorder_fec_stats, stats}], %{state | stats_baseline: state.counters}}
+  end
 
   @impl true
   def handle_buffer(:input, %Buffer{} = buffer, _ctx, %{current_format: nil} = state) do
@@ -257,11 +289,11 @@ defmodule NervesWifibroadcast.Membrane.WFB.ReorderFec do
         {actions, state}
 
       true ->
-        {action, next_state} =
+        {fragment_actions, next_state} =
           emit_source_fragment(state, block.block_idx, block.fragment_to_send_idx, :live)
 
         next_block = Map.fetch!(next_state.blocks, block.block_idx)
-        emit_contiguous_front(next_state, next_block, actions ++ [action])
+        emit_contiguous_front(next_state, next_block, actions ++ fragment_actions)
     end
   end
 
@@ -288,7 +320,7 @@ defmodule NervesWifibroadcast.Membrane.WFB.ReorderFec do
     if block.fragment_to_send_idx >= fec_k do
       {actions, pop_front_block(state)}
     else
-      {action, next_state} =
+      {fragment_actions, next_state} =
         emit_source_fragment(
           state,
           block.block_idx,
@@ -300,7 +332,7 @@ defmodule NervesWifibroadcast.Membrane.WFB.ReorderFec do
         )
 
       next_block = Map.fetch!(next_state.blocks, block.block_idx)
-      emit_all_from_front(next_state, next_block, actions ++ [action])
+      emit_all_from_front(next_state, next_block, actions ++ fragment_actions)
     end
   end
 
@@ -337,10 +369,10 @@ defmodule NervesWifibroadcast.Membrane.WFB.ReorderFec do
                                                                               acc_state} ->
           case Map.get(block.received, fragment_idx) do
             %Buffer{} ->
-              {action, updated_state} =
+              {fragment_actions, updated_state} =
                 emit_source_fragment(acc_state, block_idx, fragment_idx, emission)
 
-              {[action | acc_actions], updated_state}
+              {Enum.reverse(fragment_actions) ++ acc_actions, updated_state}
 
             nil ->
               {acc_actions, acc_state}
@@ -377,7 +409,19 @@ defmodule NervesWifibroadcast.Membrane.WFB.ReorderFec do
       |> add_counter(:lost_source_shards, lost)
       |> Map.put(:last_emitted_seq, ordered_seq)
 
-    {{:buffer, {:output, updated_buffer}}, next_state}
+    actions =
+      if lost > 0 do
+        [
+          {:notify_parent,
+           {:wfb_packet_loss,
+            packet_loss_notification(state, lost, ordered_seq, block_idx, fragment_idx)}},
+          {:buffer, {:output, updated_buffer}}
+        ]
+      else
+        [{:buffer, {:output, updated_buffer}}]
+      end
+
+    {actions, next_state}
   end
 
   defp ensure_recovered_sources(state, block_idx) do
@@ -518,6 +562,46 @@ defmodule NervesWifibroadcast.Membrane.WFB.ReorderFec do
       link_id: format.link_id,
       radio_port: format.radio_port
     }
+  end
+
+  defp packet_loss_notification(state, lost_count, ordered_seq, block_idx, fragment_idx) do
+    format = state.current_format
+
+    %{
+      block_idx: block_idx,
+      channel_id: format.channel_id,
+      epoch: format.epoch,
+      fragment_idx: fragment_idx,
+      interfaces: format.interfaces,
+      last_ordered_seq: state.last_emitted_seq,
+      link_id: format.link_id,
+      lost_count: lost_count,
+      ordered_seq: ordered_seq,
+      radio_port: format.radio_port
+    }
+  end
+
+  defp stats_notification(state) do
+    format = state.current_format
+
+    %{
+      blocks_in_ring: length(state.order),
+      channel_id: format.channel_id,
+      counters: counters_delta(state.counters, state.stats_baseline),
+      epoch: format.epoch,
+      interfaces: format.interfaces,
+      last_emitted_seq: state.last_emitted_seq,
+      last_known_block: state.last_known_block,
+      link_id: format.link_id,
+      radio_port: format.radio_port,
+      stats_interval_ms: state.stats_interval_ms
+    }
+  end
+
+  defp counters_delta(counters, baseline) do
+    Map.new(counters, fn {counter, value} ->
+      {counter, value - Map.get(baseline, counter, 0)}
+    end)
   end
 
   defp normalize_metadata(metadata) when is_map(metadata), do: metadata

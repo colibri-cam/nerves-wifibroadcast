@@ -89,7 +89,9 @@ defmodule NervesWifibroadcast.Examples.RadioSmoke do
 
     if is_list(interfaces) and interfaces != [] and
          Enum.all?(interfaces, &(is_binary(&1) and &1 != "")) do
-      Keyword.put(opts, :interfaces, Enum.uniq(interfaces))
+      opts
+      |> Keyword.put(:interfaces, Enum.uniq(interfaces))
+      |> Keyword.put_new(:radio_port, 0)
     else
       raise ArgumentError,
             "expected :interfaces option, for example start(interfaces: [\"wlan0mon\"])"
@@ -99,12 +101,15 @@ defmodule NervesWifibroadcast.Examples.RadioSmoke do
   defp print_started_banner(opts) do
     IO.puts("[radio_smoke] started")
     IO.puts("[radio_smoke] interfaces=#{Enum.join(Keyword.fetch!(opts, :interfaces), ",")}")
+    IO.puts("[radio_smoke] radio_port=#{Keyword.fetch!(opts, :radio_port)}")
     IO.puts("[radio_smoke] stop with NervesWifibroadcast.Examples.RadioSmoke.stop()")
   end
 end
 
 defmodule NervesWifibroadcast.Examples.RadioSmoke.Pipeline do
   use Membrane.Pipeline
+
+  require Membrane.Pad
 
   alias NervesWifibroadcast.Examples.RadioSmoke.Sink
   alias NervesWifibroadcast.Membrane.Radio.Source
@@ -115,13 +120,24 @@ defmodule NervesWifibroadcast.Examples.RadioSmoke.Pipeline do
 
   @impl true
   def handle_init(_ctx, opts) do
+    radio_port = Keyword.fetch!(opts, :radio_port)
+
     source_opts =
-      Keyword.take(opts, [:interfaces, :frame_buffer_size, :max_read_burst, :max_queue_size])
+      Keyword.take(opts, [
+        :interfaces,
+        :frame_buffer_size,
+        :max_read_burst,
+        :max_queue_size,
+        :link_id,
+        :radio_port,
+        :radio_ports
+      ])
 
     sink_opts = Keyword.take(opts, [:print_first, :summary_every_ms, :max_preview_bytes])
 
     spec =
       child(:source, struct(Source, source_opts))
+      |> via_out(Membrane.Pad.ref(:output, radio_port))
       |> child(:sink, struct(Sink, sink_opts))
 
     {[spec: spec], %{}}
@@ -144,7 +160,7 @@ defmodule NervesWifibroadcast.Examples.RadioSmoke.Sink do
   use Membrane.Sink
 
   alias Membrane.Time
-  alias NervesWifibroadcast.Membrane.Radio.StreamFormat
+  alias NervesWifibroadcast.Membrane.WFB.StreamFormat
   alias NervesWifibroadcast.Radiotap
 
   def_options(
@@ -201,7 +217,7 @@ defmodule NervesWifibroadcast.Examples.RadioSmoke.Sink do
   @impl true
   def handle_stream_format(:input, %StreamFormat{} = format, _ctx, state) do
     IO.puts(
-      "[radio_smoke] stream format interfaces=#{Enum.join(format.interfaces, ",")} link=#{format.link_layer} radiotap=#{format.radiotap?}"
+      "[radio_smoke] stream format interfaces=#{Enum.join(format.interfaces, ",")} link_id=#{format.link_id} radio_port=#{format.radio_port} channel_id=#{format.channel_id}"
     )
 
     {[], state}

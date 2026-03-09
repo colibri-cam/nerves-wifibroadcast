@@ -9,9 +9,9 @@ hot crypto and FEC paths.
 The RX side is being implemented incrementally and smoke-tested on real monitor
 mode hardware:
 
-- `NervesWifibroadcast.Membrane.Radio.Source` captures 802.11 frames in pure Elixir via `AF_PACKET`
+- `NervesWifibroadcast.Membrane.Radio.Source` captures monitor-mode traffic in pure Elixir via `AF_PACKET`, applies WFB ingress filtering, and routes packets by `link_id` and `radio_port`
 - `NervesWifibroadcast.Radiotap.Parser` decodes radiotap metadata into `buffer.metadata`
-- `NervesWifibroadcast.Membrane.WFB.Ingress` filters and routes packets by `link_id` and `radio_port`
+- `NervesWifibroadcast.Membrane.WFB.Ingress` remains available as a compatibility filter/router for pre-routed 802.11 frames
 - `NervesWifibroadcast.Membrane.WFB.Decrypt` accepts session announcements and decrypts WFB shards
 - `NervesWifibroadcast.Membrane.WFB.ReorderFec` reorders fragments, performs FEC recovery, and emits ordered source shards
 

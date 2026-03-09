@@ -1,34 +1,46 @@
 defmodule NervesWifibroadcast.Membrane.Radio.Source do
   @moduledoc """
-  Membrane source for monitor-mode radio capture over `AF_PACKET`.
+  Membrane source for WFB monitor-mode capture over `AF_PACKET`.
 
-  The source owns one Linux packet socket per interface and drives them through
-  OTP `:socket` async readiness notifications on Linux.
+  The source owns one Linux packet socket per interface, parses radiotap, applies
+  WFB-specific ingress filtering, and routes packets to dynamic output pads keyed
+  by `radio_port`.
   """
 
   use Membrane.Source
 
   alias Membrane.Buffer
-  alias NervesWifibroadcast.Membrane.Radio.StreamFormat
+  alias Membrane.Pad
+  alias NervesWifibroadcast.Membrane.WFB.Router
+  alias NervesWifibroadcast.Membrane.WFB.StreamFormat
   alias NervesWifibroadcast.Radio.AFPacket
   alias NervesWifibroadcast.Radiotap.Parser
 
   @max_interfaces 64
+  @default_frame_buffer_size 4301
+  @default_link_id Router.default_link_id()
 
   def_options(
     interfaces: [spec: [String.t()], default: []],
+    link_id: [spec: non_neg_integer(), default: @default_link_id],
+    radio_port: [spec: non_neg_integer() | nil, default: nil],
+    radio_ports: [spec: [non_neg_integer()], default: []],
+    drop_bad_fcs?: [spec: boolean(), default: true],
+    drop_self_injected?: [spec: boolean(), default: true],
+    trim_fcs?: [spec: boolean(), default: true],
     capture_ts_fun: [spec: (-> integer()), default: &System.monotonic_time/0],
-    frame_buffer_size: [spec: pos_integer(), default: 4096],
+    frame_buffer_size: [spec: pos_integer(), default: @default_frame_buffer_size],
     max_read_burst: [spec: pos_integer(), default: 32],
     max_queue_size: [spec: pos_integer(), default: 256],
     open_socket?: [spec: boolean(), default: true],
     parser: [spec: module(), default: Parser],
-    socket_backend: [spec: module(), default: AFPacket]
+    socket_backend: [spec: module(), default: AFPacket],
+    socket_buffer_size: [spec: pos_integer() | nil, default: nil]
   )
 
   def_output_pad(:output,
     accepted_format: StreamFormat,
-    availability: :always,
+    availability: :on_request,
     flow_control: :manual,
     demand_unit: :buffers
   )
@@ -38,20 +50,40 @@ defmodule NervesWifibroadcast.Membrane.Radio.Source do
     interfaces = normalize_interfaces!(opts.interfaces)
 
     state = %{
-      available_demand: 0,
       capture_ts_fun: opts.capture_ts_fun,
-      dropped_packets: 0,
+      counters: %{
+        bad_fcs_drops: 0,
+        dropped_packets: 0,
+        invalid_wfb_header_drops: 0,
+        malformed_packets: 0,
+        passed_packets: 0,
+        self_injected_drops: 0,
+        short_frame_drops: 0,
+        short_wfb_packet_drops: 0,
+        truncated_packets: 0,
+        unknown_packet_type_drops: 0,
+        unknown_radio_port_drops: 0,
+        unlinked_radio_port_drops: 0,
+        wrong_link_id_drops: 0
+      },
+      drop_bad_fcs?: opts.drop_bad_fcs?,
+      drop_self_injected?: opts.drop_self_injected?,
+      enabled_radio_ports:
+        Router.normalize_initial_radio_ports!(opts.radio_ports, opts.radio_port),
       frame_buffer_size: opts.frame_buffer_size,
       interfaces: interfaces,
-      malformed_packets: 0,
+      link_id: Router.validate_link_id!(opts.link_id),
       max_read_burst: opts.max_read_burst,
       max_queue_size: opts.max_queue_size,
+      next_drain_index: 0,
       open_socket?: opts.open_socket?,
+      output_pads: %{},
       parser: opts.parser,
-      queue: :queue.new(),
+      playback_started?: false,
       receivers: %{},
       socket_backend: opts.socket_backend,
-      truncated_packets: 0
+      socket_buffer_size: opts.socket_buffer_size,
+      trim_fcs?: opts.trim_fcs?
     }
 
     {[], state}
@@ -61,7 +93,7 @@ defmodule NervesWifibroadcast.Membrane.Radio.Source do
   def handle_setup(_ctx, %{open_socket?: false} = state), do: {[], state}
 
   def handle_setup(_ctx, state) do
-    case open_receivers(state.interfaces, state.socket_backend) do
+    case open_receivers(state.interfaces, state.socket_backend, state.socket_buffer_size) do
       {:ok, receivers} ->
         {[], %{state | receivers: receivers}}
 
@@ -79,28 +111,97 @@ defmodule NervesWifibroadcast.Membrane.Radio.Source do
 
   @impl true
   def handle_playing(_ctx, state) do
+    state = %{state | playback_started?: true}
     {read_actions, state} = maybe_start_reads(state)
-    {buffer_actions, state} = drain_queue(state)
+    {buffer_actions, state} = drain_queues(state)
 
-    actions = [
-      {:stream_format, {:output, %StreamFormat{interfaces: state.interfaces}}}
-      | read_actions ++ buffer_actions
-    ]
+    actions = output_stream_format_actions(state) ++ read_actions ++ buffer_actions
 
     {actions, state}
   end
 
   @impl true
-  def handle_demand(_pad, size, :buffers, _ctx, state) do
-    state = %{state | available_demand: state.available_demand + size}
-    drain_queue(state)
+  def handle_pad_added(Pad.ref(:output, radio_port) = pad, _ctx, state) do
+    radio_port = Router.validate_radio_port!(radio_port)
+
+    output = %{
+      demand: 0,
+      pad: pad,
+      queue: :queue.new(),
+      queue_len: 0
+    }
+
+    next_state = put_output(state, radio_port, output)
+
+    actions =
+      if state.playback_started? do
+        [stream_format: {pad, output_stream_format(state, radio_port)}]
+      else
+        []
+      end
+
+    {actions, next_state}
+  end
+
+  @impl true
+  def handle_pad_removed(Pad.ref(:output, radio_port), _ctx, state) do
+    {[], drop_output(state, radio_port)}
+  end
+
+  @impl true
+  def handle_demand(Pad.ref(:output, radio_port), size, :buffers, _ctx, state) do
+    case Map.get(state.output_pads, radio_port) do
+      %{demand: demand} = output ->
+        state = put_output(state, radio_port, %{output | demand: demand + size})
+        drain_queues(state)
+
+      nil ->
+        {[], state}
+    end
+  end
+
+  @impl true
+  def handle_parent_notification({:set_radio_ports, radio_ports}, _ctx, state) do
+    radio_ports = Router.normalize_radio_ports!(radio_ports)
+    state = %{state | enabled_radio_ports: radio_ports}
+    {[], drop_disabled_queues(state)}
+  end
+
+  def handle_parent_notification({:add_radio_port, radio_port}, _ctx, state) do
+    radio_port = Router.validate_radio_port!(radio_port)
+    {[], %{state | enabled_radio_ports: MapSet.put(state.enabled_radio_ports, radio_port)}}
+  end
+
+  def handle_parent_notification({:remove_radio_port, radio_port}, _ctx, state) do
+    radio_port = Router.validate_radio_port!(radio_port)
+
+    state = %{state | enabled_radio_ports: MapSet.delete(state.enabled_radio_ports, radio_port)}
+    {[], clear_output_queue(state, radio_port)}
+  end
+
+  def handle_parent_notification({:set_link_id, link_id}, _ctx, state) do
+    link_id = Router.validate_link_id!(link_id)
+
+    state =
+      state
+      |> Map.put(:link_id, link_id)
+      |> clear_all_output_queues()
+
+    actions =
+      if state.playback_started? do
+        output_stream_format_actions(state)
+      else
+        []
+      end
+
+    {actions, state}
   end
 
   @impl true
   def handle_info({:radio_packet, packet}, _ctx, state) do
     case first_receiver(state) do
       nil -> {[], state}
-      receiver -> state |> ingest_packet(packet, receiver, %{}) |> drain_queue()
+      receiver -> state |> ingest_packet(packet, receiver, %{}) |> drain_queues()
     end
   end
 
@@ -108,7 +209,7 @@ defmodule NervesWifibroadcast.Membrane.Radio.Source do
       when is_integer(receiver_idx) do
     case receiver_by_idx(state, receiver_idx) do
       nil -> {[], state}
-      receiver -> state |> ingest_packet(packet, receiver, %{}) |> drain_queue()
+      receiver -> state |> ingest_packet(packet, receiver, %{}) |> drain_queues()
     end
   end
 
@@ -153,10 +254,10 @@ defmodule NervesWifibroadcast.Membrane.Radio.Source do
     {[{:terminate, :normal}], state}
   end
 
-  defp open_receivers(interfaces, socket_backend) do
+  defp open_receivers(interfaces, socket_backend, socket_buffer_size) do
     Enum.reduce_while(Enum.with_index(interfaces), {:ok, %{}}, fn {interface, receiver_idx},
                                                                   {:ok, receivers} ->
-      case socket_backend.open(interface: interface) do
+      case socket_backend.open(interface: interface, socket_buffer_size: socket_buffer_size) do
         {:ok, socket} ->
           receiver = %{
             interface: interface,
@@ -190,7 +291,7 @@ defmodule NervesWifibroadcast.Membrane.Radio.Source do
 
   defp read_and_drain(state, socket) do
     {read_actions, state} = maybe_start_read(state, socket)
-    {buffer_actions, state} = drain_queue(state)
+    {buffer_actions, state} = drain_queues(state)
     {read_actions ++ buffer_actions, state}
   end
 
@@ -272,10 +373,10 @@ defmodule NervesWifibroadcast.Membrane.Radio.Source do
         ingest_packet(state, packet, receiver, metadata)
 
       {:error, :truncated} ->
-        %{state | truncated_packets: state.truncated_packets + 1}
+        increment_counter(state, :truncated_packets)
 
       {:error, :invalid_recvmsg} ->
-        %{state | malformed_packets: state.malformed_packets + 1}
+        increment_counter(state, :malformed_packets)
     end
   end
 
@@ -310,34 +411,113 @@ defmodule NervesWifibroadcast.Membrane.Radio.Source do
           })
 
         buffer = %Buffer{payload: payload, metadata: %{radio: radio_metadata}}
-        enqueue_buffer(state, buffer)
+        route_packet(state, buffer)
 
       {:error, _reason} ->
-        %{state | malformed_packets: state.malformed_packets + 1}
+        increment_counter(state, :malformed_packets)
     end
   end
 
-  defp enqueue_buffer(state, buffer) do
-    if :queue.len(state.queue) >= state.max_queue_size do
-      %{state | dropped_packets: state.dropped_packets + 1}
+  defp route_packet(state, %Buffer{} = buffer) do
+    case Router.route_buffer(buffer, state) do
+      {:ok, radio_port, routed_buffer} ->
+        if Map.has_key?(state.output_pads, radio_port) do
+          enqueue_buffer(state, radio_port, routed_buffer)
+          |> increment_counter(:passed_packets)
+        else
+          increment_counter(state, :unlinked_radio_port_drops)
+        end
+
+      {:drop, counter} ->
+        increment_counter(state, counter)
+    end
+  end
+
+  defp enqueue_buffer(state, radio_port, buffer) do
+    output = Map.fetch!(state.output_pads, radio_port)
+
+    if output.queue_len >= state.max_queue_size do
+      increment_counter(state, :dropped_packets)
     else
-      %{state | queue: :queue.in(buffer, state.queue)}
+      updated_output = %{
+        output
+        | queue: :queue.in(buffer, output.queue),
+          queue_len: output.queue_len + 1
+      }
+
+      put_output(state, radio_port, updated_output)
     end
   end
 
-  defp drain_queue(state), do: drain_queue(state, [])
+  defp drain_queues(state), do: drain_queues(state, [])
 
-  defp drain_queue(%{available_demand: 0} = state, actions), do: {Enum.reverse(actions), state}
+  defp drain_queues(state, actions) do
+    case pop_next_buffer(state) do
+      {:ok, action, next_state} ->
+        drain_queues(next_state, [action | actions])
 
-  defp drain_queue(state, actions) do
-    case :queue.out(state.queue) do
-      {{:value, buffer}, queue} ->
-        next_state = %{state | available_demand: state.available_demand - 1, queue: queue}
-        drain_queue(next_state, [{:buffer, {:output, buffer}} | actions])
-
-      {:empty, _queue} ->
+      :empty ->
         {Enum.reverse(actions), state}
     end
+  end
+
+  defp pop_next_buffer(%{output_pads: output_pads}) when map_size(output_pads) == 0,
+    do: :empty
+
+  defp pop_next_buffer(state) do
+    radio_ports = state.output_pads |> Map.keys() |> Enum.sort()
+    count = length(radio_ports)
+    start_index = rem(state.next_drain_index, count)
+    rotated_ports = Enum.drop(radio_ports, start_index) ++ Enum.take(radio_ports, start_index)
+
+    case Enum.find(rotated_ports, &ready_output?(state, &1)) do
+      nil ->
+        :empty
+
+      radio_port ->
+        output = Map.fetch!(state.output_pads, radio_port)
+        {{:value, buffer}, queue} = :queue.out(output.queue)
+
+        updated_output = %{
+          output
+          | demand: output.demand - 1,
+            queue: queue,
+            queue_len: output.queue_len - 1
+        }
+
+        next_state =
+          state
+          |> put_output(radio_port, updated_output)
+          |> Map.put(:next_drain_index, next_drain_index(radio_ports, radio_port))
+
+        {:ok, {:buffer, {output.pad, buffer}}, next_state}
+    end
+  end
+
+  defp ready_output?(state, radio_port) do
+    case Map.get(state.output_pads, radio_port) do
+      %{demand: demand, queue_len: queue_len} when demand > 0 and queue_len > 0 -> true
+      _output -> false
+    end
+  end
+
+  defp next_drain_index(radio_ports, radio_port) do
+    case Enum.find_index(radio_ports, &(&1 == radio_port)) do
+      nil -> 0
+      index -> index + 1
+    end
+  end
+
+  defp output_stream_format_actions(state) do
+    state.output_pads
+    |> Enum.sort_by(fn {radio_port, _output} -> radio_port end)
+    |> Enum.map(fn {radio_port, %{pad: pad}} ->
+      {:stream_format, {pad, output_stream_format(state, radio_port)}}
+    end)
+  end
+
+  defp output_stream_format(state, radio_port) do
+    Router.output_stream_format(state.link_id, radio_port, state.interfaces)
   end
 
   defp normalize_interfaces!(interfaces) when is_list(interfaces) do
@@ -411,6 +591,43 @@ defmodule NervesWifibroadcast.Membrane.Radio.Source do
     :ok
   end
 
+  defp clear_all_output_queues(state) do
+    Enum.reduce(Map.keys(state.output_pads), state, fn radio_port, acc_state ->
+      clear_output_queue(acc_state, radio_port)
+    end)
+  end
+
+  defp drop_disabled_queues(state) do
+    Enum.reduce(Map.keys(state.output_pads), state, fn radio_port, acc_state ->
+      if MapSet.member?(acc_state.enabled_radio_ports, radio_port) do
+        acc_state
+      else
+        clear_output_queue(acc_state, radio_port)
+      end
+    end)
+  end
+
+  defp clear_output_queue(state, radio_port) do
+    case Map.get(state.output_pads, radio_port) do
+      %{queue_len: queue_len} = output when queue_len > 0 ->
+        state
+        |> put_output(radio_port, %{output | queue: :queue.new(), queue_len: 0})
+        |> add_counter(:dropped_packets, queue_len)
+
+      _output ->
+        state
+    end
+  end
+
+  defp drop_output(state, radio_port) do
+    state = clear_output_queue(state, radio_port)
+    %{state | output_pads: Map.delete(state.output_pads, radio_port)}
+  end
+
+  defp put_output(state, radio_port, output) do
+    %{state | output_pads: Map.put(state.output_pads, radio_port, output)}
+  end
+
   defp first_receiver(state) do
     state.receivers
     |> Map.values()
@@ -421,5 +638,11 @@ defmodule NervesWifibroadcast.Membrane.Radio.Source do
     Enum.find_value(state.receivers, fn {_socket, receiver} ->
       if receiver.receiver_idx == receiver_idx, do: receiver
     end)
+  end
+
+  defp increment_counter(state, counter), do: add_counter(state, counter, 1)
+
+  defp add_counter(state, counter, amount) do
+    update_in(state.counters[counter], &((&1 || 0) + amount))
   end
 end

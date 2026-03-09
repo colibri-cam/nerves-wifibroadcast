@@ -161,6 +161,65 @@ defmodule NervesWifibroadcast.Membrane.WFB.DecryptTest do
     assert state.counters.old_epoch_drops == 1
   end
 
+  test "suppresses duplicate accepted session packets before decrypt" do
+    keys = WFBFixtures.key_material()
+    stream_format = WFBFixtures.ingress_stream_format()
+
+    {session, packet} =
+      WFBFixtures.encrypted_session_packet(keys, epoch: 55, fec_k: 10, fec_n: 14)
+
+    state = decrypt_state(keys)
+    {[], state} = Decrypt.handle_stream_format(:input, stream_format, %{}, state)
+
+    buffer = %Buffer{payload: packet, metadata: WFBFixtures.session_metadata(session)}
+
+    assert {actions, state} = Decrypt.handle_buffer(:input, buffer, %{}, state)
+    assert Enum.any?(actions, &match?({:notify_parent, {:wfb_session_accepted, _}}, &1))
+
+    assert {[], state} = Decrypt.handle_buffer(:input, buffer, %{}, state)
+    assert state.counters.duplicate_session_drops == 1
+  end
+
+  test "drops too-short encrypted data packets before decrypt" do
+    keys = WFBFixtures.key_material()
+    stream_format = WFBFixtures.ingress_stream_format()
+
+    {session, session_packet} =
+      WFBFixtures.encrypted_session_packet(keys, epoch: 7, fec_k: 8, fec_n: 12)
+
+    state = decrypt_state(keys)
+    {[], state} = Decrypt.handle_stream_format(:input, stream_format, %{}, state)
+
+    {_, state} =
+      Decrypt.handle_buffer(
+        :input,
+        %Buffer{payload: session_packet, metadata: WFBFixtures.session_metadata(session)},
+        %{},
+        state
+      )
+
+    short_packet = <<0x01, 0x0102030405060708::big-64, 0::size(16 * 8)>>
+
+    assert {[], state} =
+             Decrypt.handle_buffer(
+               :input,
+               %Buffer{
+                 payload: short_packet,
+                 metadata:
+                   WFBFixtures.data_metadata(%{
+                     block_idx: 0x01020304050607,
+                     data_nonce: 0x0102030405060708,
+                     fragment_idx: 0x08
+                   })
+               },
+               %{},
+               state
+             )
+
+    assert state.counters.short_data_packet_drops == 1
+    assert state.counters.data_decrypt_errors == 0
+  end
+
   defp decrypt_state(keys, opts \\ []) do
     opts =
       Keyword.merge(

@@ -42,28 +42,50 @@ end
 defmodule NervesWifibroadcast.Membrane.Radio.SourceTest do
   use ExUnit.Case, async: true
 
+  import Bitwise
+
   alias Membrane.Buffer
+  alias Membrane.Pad
   alias NervesWifibroadcast.Membrane.Radio.Source
-  alias NervesWifibroadcast.Membrane.Radio.StreamFormat
+  alias NervesWifibroadcast.Membrane.WFB.StreamFormat
   alias NervesWifibroadcast.Radiotap
   alias NervesWifibroadcast.TestSupport.FakeAFPacket
+
+  require Membrane.Pad
+
+  @link_id 0x010203
+  @radio_port 0x04
+  @other_radio_port 0x08
+  @channel_id (@link_id <<< 8) + @radio_port
+  @other_channel_id (@link_id <<< 8) + @other_radio_port
 
   setup do
     Process.delete(:fake_af_packet_results)
     :ok
   end
 
-  test "playing arms an async recvmsg operation for each interface" do
+  test "playing arms an async recvmsg operation for each interface and emits per-pad stream formats" do
     put_fake_results(%{
       socket("wlan0") => [:select],
       socket("wlan1") => [:select]
     })
 
-    state = source_state(["wlan0", "wlan1"])
+    state = source_state(["wlan0", "wlan1"], radio_ports: [@radio_port, @other_radio_port])
     {[], state} = Source.handle_setup(%{}, state)
 
-    assert {[{:stream_format, {:output, %StreamFormat{interfaces: ["wlan0", "wlan1"]}}}], state} =
-             Source.handle_playing(%{}, state)
+    pad0 = Pad.ref(:output, @radio_port)
+    pad1 = Pad.ref(:output, @other_radio_port)
+
+    {[], state} = Source.handle_pad_added(pad0, %{}, state)
+    {[], state} = Source.handle_pad_added(pad1, %{}, state)
+
+    assert {[
+              stream_format:
+                {^pad0, %StreamFormat{channel_id: @channel_id, interfaces: ["wlan0", "wlan1"]}},
+              stream_format:
+                {^pad1,
+                 %StreamFormat{channel_id: @other_channel_id, interfaces: ["wlan0", "wlan1"]}}
+            ], state} = Source.handle_playing(%{}, state)
 
     assert %{read_state: {:waiting, handle0}, receiver_idx: 0} = state.receivers[socket("wlan0")]
     assert %{read_state: {:waiting, handle1}, receiver_idx: 1} = state.receivers[socket("wlan1")]
@@ -71,8 +93,9 @@ defmodule NervesWifibroadcast.Membrane.Radio.SourceTest do
     assert is_reference(handle1)
   end
 
-  test "select notification drains one packet from the matching socket and re-arms it" do
-    packet = radiotap_packet()
+  test "select notification routes one packet to the matching radio_port and re-arms it" do
+    packet =
+      radiotap_packet(wfb_frame(@channel_id, data_packet(0x0102030405060708, <<0x08, 0x01>>)))
 
     put_fake_results(%{
       socket("wlan0") => [
@@ -83,27 +106,75 @@ defmodule NervesWifibroadcast.Membrane.Radio.SourceTest do
       socket("wlan1") => [:select]
     })
 
-    state = source_state(["wlan0", "wlan1"])
+    pad = Pad.ref(:output, @radio_port)
+
+    state = source_state(["wlan0", "wlan1"], radio_ports: [@radio_port])
     {[], state} = Source.handle_setup(%{}, state)
-    {[_stream_format], state} = Source.handle_playing(%{}, state)
+    {[], state} = Source.handle_pad_added(pad, %{}, state)
+
+    {[stream_format: {^pad, %StreamFormat{channel_id: @channel_id}}], state} =
+      Source.handle_playing(%{}, state)
+
     %{read_state: {:waiting, handle}} = state.receivers[socket("wlan0")]
 
-    {[], state} = Source.handle_demand(:output, 1, :buffers, %{}, state)
+    {[], state} = Source.handle_demand(pad, 1, :buffers, %{}, state)
 
-    assert {[{:buffer, {:output, %Buffer{} = buffer}}], state} =
+    assert {[buffer: {^pad, %Buffer{} = buffer}], state} =
              Source.handle_info({:"$socket", socket("wlan0"), :select, handle}, %{}, state)
 
-    assert buffer.payload == <<0x08, 0x01>>
+    assert buffer.payload == data_packet(0x0102030405060708, <<0x08, 0x01>>)
+    assert buffer.metadata.ieee80211.header_len == 24
+    assert buffer.metadata.wfb.channel_id == @channel_id
+    assert buffer.metadata.wfb.packet_type == :data
+    assert buffer.metadata.wfb.packet_type_byte == 0x01
+    assert buffer.metadata.wfb.data_nonce == 0x0102030405060708
+    assert buffer.metadata.wfb.block_idx == 0x01020304050607
+    assert buffer.metadata.wfb.fragment_idx == 0x08
+    assert buffer.metadata.wfb.link_id == @link_id
+    assert buffer.metadata.wfb.radio_port == @radio_port
     assert buffer.metadata.radio.capture_ts == 123
     assert buffer.metadata.radio.raw_length == byte_size(packet)
     assert buffer.metadata.radio.receiver_idx == 0
     assert buffer.metadata.radio.socket_addr == %{ifindex: 7}
     assert buffer.metadata.radio.socket_flags == []
     assert %Radiotap{} = buffer.metadata.radio.radiotap
+    assert state.counters.passed_packets == 1
 
     assert {:waiting, next_handle} = state.receivers[socket("wlan0")].read_state
     refute next_handle == handle
     assert match?({:waiting, _handle}, state.receivers[socket("wlan1")].read_state)
+  end
+
+  test "drops unknown radio ports until they are enabled at runtime" do
+    packet = radiotap_packet(wfb_frame(@other_channel_id, data_packet(0xAA, <<0x01>>)))
+
+    put_fake_results(%{
+      socket("wlan0") => [:select],
+      socket("wlan1") => [:select]
+    })
+
+    pad = Pad.ref(:output, @other_radio_port)
+
+    state = source_state(["wlan0", "wlan1"], radio_ports: [@radio_port])
+    {[], state} = Source.handle_setup(%{}, state)
+    {[], state} = Source.handle_pad_added(pad, %{}, state)
+
+    {[stream_format: {^pad, %StreamFormat{channel_id: @other_channel_id}}], state} =
+      Source.handle_playing(%{}, state)
+
+    {[], state} = Source.handle_demand(pad, 1, :buffers, %{}, state)
+
+    assert {[], state} = Source.handle_info({:radio_packet, 0, packet}, %{}, state)
+    assert state.counters.unknown_radio_port_drops == 1
+
+    {[], state} =
+      Source.handle_parent_notification({:add_radio_port, @other_radio_port}, %{}, state)
+
+    assert {[buffer: {^pad, %Buffer{} = buffer}], state} =
+             Source.handle_info({:radio_packet, 0, packet}, %{}, state)
+
+    assert buffer.metadata.wfb.radio_port == @other_radio_port
+    assert state.counters.passed_packets == 1
   end
 
   test "closing one socket keeps the source alive on remaining interfaces" do
@@ -112,8 +183,11 @@ defmodule NervesWifibroadcast.Membrane.Radio.SourceTest do
       socket("wlan1") => [:select]
     })
 
-    state = source_state(["wlan0", "wlan1"])
+    pad = Pad.ref(:output, @radio_port)
+
+    state = source_state(["wlan0", "wlan1"], radio_ports: [@radio_port])
     {[], state} = Source.handle_setup(%{}, state)
+    {[], state} = Source.handle_pad_added(pad, %{}, state)
     {[_stream_format], state} = Source.handle_playing(%{}, state)
     %{read_state: {:waiting, handle}} = state.receivers[socket("wlan0")]
 
@@ -136,8 +210,11 @@ defmodule NervesWifibroadcast.Membrane.Radio.SourceTest do
       socket("wlan1") => [:select]
     })
 
-    state = source_state(["wlan0", "wlan1"])
+    pad = Pad.ref(:output, @radio_port)
+
+    state = source_state(["wlan0", "wlan1"], radio_ports: [@radio_port])
     {[], state} = Source.handle_setup(%{}, state)
+    {[], state} = Source.handle_pad_added(pad, %{}, state)
     {[_stream_format], state} = Source.handle_playing(%{}, state)
     %{read_state: {:waiting, handle0}} = state.receivers[socket("wlan0")]
     %{read_state: {:waiting, handle1}} = state.receivers[socket("wlan1")]
@@ -150,16 +227,21 @@ defmodule NervesWifibroadcast.Membrane.Radio.SourceTest do
     assert_received {:fake_af_packet_close, {:fake_socket, "wlan1"}}
   end
 
-  defp source_state(interfaces) do
+  defp source_state(interfaces, opts) do
     opts =
-      struct(Source,
-        capture_ts_fun: fn -> 123 end,
-        interfaces: interfaces,
-        max_read_burst: 8,
-        socket_backend: FakeAFPacket
+      Keyword.merge(
+        [
+          capture_ts_fun: fn -> 123 end,
+          interfaces: interfaces,
+          link_id: @link_id,
+          max_read_burst: 8,
+          radio_ports: [@radio_port],
+          socket_backend: FakeAFPacket
+        ],
+        opts
       )
 
-    {[], state} = Source.handle_init(%{}, opts)
+    {[], state} = Source.handle_init(%{}, struct(Source, opts))
     state
   end
 
@@ -169,14 +251,25 @@ defmodule NervesWifibroadcast.Membrane.Radio.SourceTest do
     Process.put(:fake_af_packet_results, results_by_socket)
   end
 
-  defp radiotap_packet do
-    <<
-      0,
-      0,
-      8::little-16,
-      0::little-32,
-      0x08,
-      0x01
-    >>
+  defp radiotap_packet(frame) do
+    <<0, 0, 8::little-16, 0::little-32, frame::binary>>
   end
+
+  defp wfb_frame(channel_id, wfb_packet, opts \\ []) do
+    receiver_mac = <<0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF>>
+    source_mac = Keyword.get(opts, :source_mac, <<0x57, 0x42, channel_id::big-32>>)
+    bssid_mac = Keyword.get(opts, :bssid_mac, <<0x57, 0x42, channel_id::big-32>>)
+
+    frame =
+      <<0x0108::little-16, 0::little-16, receiver_mac::binary, source_mac::binary,
+        bssid_mac::binary, 0::little-16, wfb_packet::binary>>
+
+    if Keyword.get(opts, :append_fcs?, false) do
+      frame <> <<0xDE, 0xAD, 0xBE, 0xEF>>
+    else
+      frame
+    end
+  end
+
+  defp data_packet(data_nonce, ciphertext), do: <<0x01, data_nonce::big-64, ciphertext::binary>>
 end

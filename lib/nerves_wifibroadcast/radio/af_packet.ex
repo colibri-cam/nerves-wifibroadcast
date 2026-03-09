@@ -12,13 +12,14 @@ defmodule NervesWifibroadcast.Radio.AFPacket do
   def open(opts) do
     interface = Keyword.fetch!(opts, :interface)
     protocol = Keyword.get(opts, :protocol, @eth_p_all)
+    socket_buffer_size = Keyword.get(opts, :socket_buffer_size)
 
     case :socket.open(@af_packet, :raw, htons(protocol)) do
       {:ok, socket} ->
-        case bind(socket, interface, protocol) do
-          :ok ->
-            {:ok, socket}
-
+        with :ok <- maybe_set_socket_buffer(socket, socket_buffer_size),
+             :ok <- bind(socket, interface, protocol) do
+          {:ok, socket}
+        else
           {:error, _reason} = error ->
             maybe_close_socket(socket)
             error
@@ -70,6 +71,18 @@ defmodule NervesWifibroadcast.Radio.AFPacket do
   defp htons(value) do
     <<big_endian::big-unsigned-integer-size(16)>> = <<value::native-unsigned-integer-size(16)>>
     big_endian
+  end
+
+  defp maybe_set_socket_buffer(_socket, nil), do: :ok
+  defp maybe_set_socket_buffer(_socket, 0), do: :ok
+
+  defp maybe_set_socket_buffer(socket, socket_buffer_size)
+       when is_integer(socket_buffer_size) and socket_buffer_size > 0 do
+    :socket.setopt(socket, :socket, :rcvbuf, socket_buffer_size)
+  end
+
+  defp maybe_set_socket_buffer(_socket, socket_buffer_size) do
+    {:error, {:invalid_socket_buffer_size, socket_buffer_size}}
   end
 
   defp maybe_close_socket(nil), do: :ok

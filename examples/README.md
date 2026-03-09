@@ -56,8 +56,9 @@ You usually need root or `CAP_NET_RAW` for `AF_PACKET` capture.
 
 ## WFB Ingress Smoke Test
 
-`examples/wfb_ingress_smoke.exs` smoke-tests the next stage of the pipeline:
-`Radio.Source -> WFB.Ingress -> per-radio-port sinks`.
+`examples/wfb_ingress_smoke.exs` smoke-tests WFB-specific routing directly in the
+source:
+`Radio.Source -> per-radio-port sinks`.
 
 Load it in IEx:
 
@@ -110,12 +111,12 @@ NervesWifibroadcast.Examples.WfbIngressSmoke.start(
 )
 ```
 
-Packets for unknown radio ports or the wrong `link_id` are dropped by `NervesWifibroadcast.Membrane.WFB.Ingress`.
+Packets for unknown radio ports or the wrong `link_id` are dropped directly by `NervesWifibroadcast.Membrane.Radio.Source`.
 
 ## WFB Decrypt Smoke Test
 
 `examples/wfb_decrypt_smoke.exs` smoke-tests the decrypt stage of the pipeline:
-`Radio.Source -> WFB.Ingress -> WFB.Decrypt -> per-radio-port sinks`.
+`Radio.Source -> WFB.Decrypt -> per-radio-port sinks`.
 
 Load it in IEx:
 
@@ -178,7 +179,7 @@ fragments begin to flow.
 
 `examples/wfb_reorder_fec_smoke.exs` smoke-tests the next stage of the RX
 pipeline:
-`Radio.Source -> WFB.Ingress -> WFB.Decrypt -> WFB.ReorderFec -> per-radio-port sinks`.
+`Radio.Source -> WFB.Decrypt -> WFB.ReorderFec -> per-radio-port sinks`.
 
 Load it in IEx:
 

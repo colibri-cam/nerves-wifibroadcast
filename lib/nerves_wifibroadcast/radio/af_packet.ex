@@ -5,6 +5,9 @@ defmodule NervesWifibroadcast.Radio.AFPacket do
 
   @af_packet 17
   @eth_p_all 0x0003
+  @packet_qdisc_bypass 20
+  @sol_packet 263
+  @so_mark 36
 
   @type socket :: term()
 
@@ -16,7 +19,31 @@ defmodule NervesWifibroadcast.Radio.AFPacket do
 
     case :socket.open(@af_packet, :raw, htons(protocol)) do
       {:ok, socket} ->
-        with :ok <- maybe_set_socket_buffer(socket, socket_buffer_size),
+        with :ok <- maybe_set_socket_buffer(socket, socket_buffer_size, :rcvbuf),
+             :ok <- bind(socket, interface, protocol) do
+          {:ok, socket}
+        else
+          {:error, _reason} = error ->
+            maybe_close_socket(socket)
+            error
+        end
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  @spec open_tx(keyword()) :: {:ok, socket()} | {:error, term()}
+  def open_tx(opts) do
+    interface = Keyword.fetch!(opts, :interface)
+    protocol = Keyword.get(opts, :protocol, 0)
+    socket_buffer_size = Keyword.get(opts, :socket_buffer_size)
+    use_qdisc? = Keyword.get(opts, :use_qdisc?, false)
+
+    case :socket.open(@af_packet, :raw, htons(protocol)) do
+      {:ok, socket} ->
+        with :ok <- maybe_set_qdisc_bypass(socket, use_qdisc?),
+             :ok <- maybe_set_socket_buffer(socket, socket_buffer_size, :sndbuf),
              :ok <- bind(socket, interface, protocol) do
           {:ok, socket}
         else
@@ -49,6 +76,19 @@ defmodule NervesWifibroadcast.Radio.AFPacket do
     :socket.close(socket)
   end
 
+  @spec send(socket(), iodata()) :: :ok | {:error, term()}
+  def send(socket, packet) do
+    :socket.send(socket, packet)
+  end
+
+  @spec set_tx_mark(socket(), non_neg_integer()) :: :ok | {:error, term()}
+  def set_tx_mark(socket, fwmark)
+      when is_integer(fwmark) and fwmark >= 0 and fwmark <= 0xFFFF_FFFF do
+    :socket.setopt_native(socket, {:socket, @so_mark}, fwmark)
+  end
+
+  def set_tx_mark(_socket, fwmark), do: {:error, {:invalid_fwmark, fwmark}}
+
   @spec bind(socket(), String.t(), non_neg_integer()) :: :ok | {:error, term()}
   def bind(socket, interface, protocol \\ @eth_p_all) do
     with {:ok, if_index} <- :net.if_name2index(String.to_charlist(interface)) do
@@ -73,17 +113,25 @@ defmodule NervesWifibroadcast.Radio.AFPacket do
     big_endian
   end
 
-  defp maybe_set_socket_buffer(_socket, nil), do: :ok
-  defp maybe_set_socket_buffer(_socket, 0), do: :ok
+  defp maybe_set_socket_buffer(_socket, nil, _buffer_opt), do: :ok
+  defp maybe_set_socket_buffer(_socket, 0, _buffer_opt), do: :ok
 
-  defp maybe_set_socket_buffer(socket, socket_buffer_size)
+  defp maybe_set_socket_buffer(socket, socket_buffer_size, buffer_opt)
        when is_integer(socket_buffer_size) and socket_buffer_size > 0 do
-    :socket.setopt(socket, :socket, :rcvbuf, socket_buffer_size)
+    :socket.setopt(socket, :socket, buffer_opt, socket_buffer_size)
   end
 
-  defp maybe_set_socket_buffer(_socket, socket_buffer_size) do
+  defp maybe_set_socket_buffer(_socket, socket_buffer_size, _buffer_opt) do
     {:error, {:invalid_socket_buffer_size, socket_buffer_size}}
   end
+
+  defp maybe_set_qdisc_bypass(_socket, true), do: :ok
+
+  defp maybe_set_qdisc_bypass(socket, false) do
+    :socket.setopt_native(socket, {@sol_packet, @packet_qdisc_bypass}, true)
+  end
+
+  defp maybe_set_qdisc_bypass(_socket, use_qdisc?), do: {:error, {:invalid_use_qdisc, use_qdisc?}}
 
   defp maybe_close_socket(nil), do: :ok
   defp maybe_close_socket(socket), do: :socket.close(socket)

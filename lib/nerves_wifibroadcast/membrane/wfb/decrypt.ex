@@ -1,6 +1,9 @@
 defmodule NervesWifibroadcast.Membrane.WFB.Decrypt do
   @moduledoc """
-  Decrypts WFB session and data packets for a single ingress branch.
+  Decrypts WFB session and data packet payloads for a single ingress branch.
+
+  The element keeps the packet/session contract unchanged so a clear-text pipeline
+  can bypass it entirely and connect `Radio.Source` straight to `FecDecoder`.
   """
 
   use Membrane.Filter
@@ -8,7 +11,7 @@ defmodule NervesWifibroadcast.Membrane.WFB.Decrypt do
   import Bitwise
 
   alias Membrane.Buffer
-  alias NervesWifibroadcast.Membrane.WFB.DecryptedStreamFormat
+  alias NervesWifibroadcast.Membrane.WFB.Router
   alias NervesWifibroadcast.Membrane.WFB.StreamFormat
   alias NervesWifibroadcast.WFB.CryptoNif
   alias NervesWifibroadcast.WFB.Keys
@@ -16,7 +19,7 @@ defmodule NervesWifibroadcast.Membrane.WFB.Decrypt do
 
   @aead_abytes 16
   @max_block_idx (1 <<< 55) - 1
-  @min_data_packet_size 9 + @aead_abytes + 3
+  @min_data_packet_size @aead_abytes + 3
 
   def_options(
     key_path: [spec: String.t() | nil, default: "gs.key"],
@@ -33,7 +36,7 @@ defmodule NervesWifibroadcast.Membrane.WFB.Decrypt do
 
   def_output_pad(:output,
     availability: :always,
-    accepted_format: DecryptedStreamFormat,
+    accepted_format: StreamFormat,
     flow_control: :auto
   )
 
@@ -76,8 +79,8 @@ defmodule NervesWifibroadcast.Membrane.WFB.Decrypt do
 
   @impl true
   def handle_stream_format(:input, %StreamFormat{} = stream_format, _ctx, state) do
-    actions = maybe_stream_format_action(stream_format, state.current_session)
-    {actions, %{state | accepted_session_packet: nil, input_stream_format: stream_format}}
+    {[stream_format: {:output, stream_format}],
+     %{state | accepted_session_packet: nil, input_stream_format: stream_format}}
   end
 
   @impl true
@@ -93,14 +96,16 @@ defmodule NervesWifibroadcast.Membrane.WFB.Decrypt do
   end
 
   defp handle_session_packet(%Buffer{} = buffer, state) do
-    if duplicate_accepted_session_packet?(state, buffer.payload) do
+    fingerprint = session_packet_fingerprint(buffer)
+
+    if duplicate_accepted_session_packet?(state, fingerprint) do
       {[], increment_counter(state, :duplicate_session_drops)}
     else
-      case CryptoNif.open_session(buffer.payload, state.keys.box_key) do
+      case decrypt_session_payload(buffer, state) do
         {:ok, plaintext} ->
           with {:ok, session} <- Session.parse(plaintext),
                :ok <- validate_session(session, buffer, state) do
-            maybe_install_session(state, session, buffer.payload)
+            install_session(state, session, fingerprint, plaintext, buffer)
           else
             {:error, :invalid_session_data} ->
               {notify_session_issue(state, buffer, :invalid_session_data),
@@ -113,10 +118,6 @@ defmodule NervesWifibroadcast.Membrane.WFB.Decrypt do
             {:error, :wrong_channel_id} ->
               {notify_session_issue(state, buffer, :wrong_channel_id),
                increment_counter(state, :wrong_channel_id_drops)}
-
-            {:error, :invalid_fec} ->
-              {notify_session_issue(state, buffer, :invalid_fec),
-               increment_counter(state, :invalid_fec_drops)}
           end
 
         :error ->
@@ -142,8 +143,7 @@ defmodule NervesWifibroadcast.Membrane.WFB.Decrypt do
       not is_integer(block_idx) or block_idx < 0 or block_idx > @max_block_idx ->
         {[], increment_counter(state, :invalid_block_drops)}
 
-      not is_integer(fragment_idx) or fragment_idx < 0 or
-          fragment_idx >= state.current_session.fec_n ->
+      not is_integer(fragment_idx) or fragment_idx < 0 or fragment_idx > 0xFF ->
         {[], increment_counter(state, :invalid_fec_drops)}
 
       true ->
@@ -152,7 +152,7 @@ defmodule NervesWifibroadcast.Membrane.WFB.Decrypt do
   end
 
   defp decrypt_data_packet(%Buffer{} = buffer, state) do
-    case CryptoNif.open_data(buffer.payload, state.current_session.session_key) do
+    case decrypt_data_payload(buffer, state) do
       {:ok, plaintext} when byte_size(plaintext) >= 3 ->
         routed_buffer =
           %Buffer{buffer | payload: plaintext}
@@ -168,45 +168,29 @@ defmodule NervesWifibroadcast.Membrane.WFB.Decrypt do
     end
   end
 
-  defp maybe_install_session(state, %Session{} = session, accepted_session_packet) do
-    if session_key_changed?(state.current_session, session) do
-      next_state = %{
-        state
-        | current_session: session,
-          accepted_session_packet: accepted_session_packet,
-          epoch_floor: session.epoch
-      }
-
-      actions =
-        maybe_stream_format_action(state.input_stream_format, session) ++
-          [
-            notify_parent:
-              {:wfb_session_accepted, session_notification(session, state.input_stream_format)}
-          ]
-
-      {actions, next_state}
-    else
-      {[], %{state | accepted_session_packet: accepted_session_packet}}
-    end
-  end
-
-  defp maybe_stream_format_action(%StreamFormat{} = input_stream_format, %Session{} = session) do
-    [stream_format: {:output, output_stream_format(input_stream_format, session)}]
-  end
-
-  defp maybe_stream_format_action(_input_stream_format, _session), do: []
-
-  defp output_stream_format(%StreamFormat{} = input_stream_format, %Session{} = session) do
-    %DecryptedStreamFormat{
-      channel_id: input_stream_format.channel_id,
-      epoch: session.epoch,
-      fec_k: session.fec_k,
-      fec_n: session.fec_n,
-      fec_type: session.fec_type,
-      interfaces: input_stream_format.interfaces,
-      link_id: input_stream_format.link_id,
-      radio_port: input_stream_format.radio_port
+  defp install_session(
+         state,
+         %Session{} = session,
+         accepted_session_packet,
+         plaintext,
+         %Buffer{} = buffer
+       ) do
+    next_state = %{
+      state
+      | accepted_session_packet: accepted_session_packet,
+        current_session: session,
+        epoch_floor: session.epoch
     }
+
+    if session_key_changed?(state.current_session, session) do
+      routed_buffer =
+        %Buffer{buffer | payload: plaintext}
+        |> put_wfb_session_metadata(session)
+
+      {[buffer: {:output, routed_buffer}], next_state}
+    else
+      {[], next_state}
+    end
   end
 
   defp validate_session(%Session{} = session, %Buffer{} = buffer, state) do
@@ -218,15 +202,6 @@ defmodule NervesWifibroadcast.Membrane.WFB.Decrypt do
 
       session.channel_id != expected_channel_id ->
         {:error, :wrong_channel_id}
-
-      session.fec_type != Session.fec_vdm_rs() ->
-        {:error, :invalid_fec}
-
-      session.fec_n < 1 ->
-        {:error, :invalid_fec}
-
-      session.fec_k < 1 or session.fec_k > session.fec_n ->
-        {:error, :invalid_fec}
 
       true ->
         :ok
@@ -251,12 +226,27 @@ defmodule NervesWifibroadcast.Membrane.WFB.Decrypt do
     }
   end
 
+  defp put_wfb_session_metadata(%Buffer{} = buffer, %Session{} = session) do
+    metadata =
+      buffer.metadata
+      |> normalize_metadata()
+      |> Map.update(:wfb, %{}, fn wfb ->
+        Map.merge(wfb, %{
+          fec_k: session.fec_k,
+          fec_n: session.fec_n,
+          fec_type: session.fec_type,
+          session_epoch: session.epoch
+        })
+      end)
+      |> Map.put(:wfb_session, session)
+
+    %Buffer{buffer | metadata: metadata}
+  end
+
   defp session_key_changed?(nil, %Session{}), do: true
 
-  defp session_key_changed?(%Session{session_key: session_key}, %Session{session_key: session_key}),
-       do: false
-
-  defp session_key_changed?(%Session{}, %Session{}), do: true
+  defp session_key_changed?(%Session{} = current_session, %Session{} = session),
+    do: current_session != session
 
   defp load_keys!(%{rx_secretkey: nil, tx_publickey: nil, key_path: key_path})
        when is_binary(key_path) do
@@ -287,21 +277,34 @@ defmodule NervesWifibroadcast.Membrane.WFB.Decrypt do
     [notify_parent: {:wfb_session_rejected, reason, session_issue_context(state, buffer)}]
   end
 
-  defp duplicate_accepted_session_packet?(state, packet) do
-    is_binary(state.accepted_session_packet) and state.accepted_session_packet == packet
+  defp decrypt_session_payload(%Buffer{} = buffer, state) do
+    buffer
+    |> build_session_packet()
+    |> CryptoNif.open_session(state.keys.box_key)
   end
 
-  defp session_notification(%Session{} = session, input_stream_format) do
-    %{
-      channel_id: session.channel_id,
-      epoch: session.epoch,
-      fec_k: session.fec_k,
-      fec_n: session.fec_n,
-      fec_type: session.fec_type,
-      interfaces: input_stream_format && input_stream_format.interfaces,
-      link_id: input_stream_format && input_stream_format.link_id,
-      radio_port: input_stream_format && input_stream_format.radio_port
-    }
+  defp decrypt_data_payload(%Buffer{} = buffer, state) do
+    buffer
+    |> build_data_packet()
+    |> CryptoNif.open_data(state.current_session.session_key)
+  end
+
+  defp build_session_packet(%Buffer{} = buffer) do
+    session_nonce = get_in(buffer.metadata, [:wfb, :session_nonce])
+    Router.build_session_packet(session_nonce, buffer.payload)
+  end
+
+  defp build_data_packet(%Buffer{} = buffer) do
+    data_nonce = get_in(buffer.metadata, [:wfb, :data_nonce])
+    Router.build_data_packet(data_nonce, buffer.payload)
+  end
+
+  defp duplicate_accepted_session_packet?(state, packet) do
+    state.accepted_session_packet == packet
+  end
+
+  defp session_packet_fingerprint(%Buffer{} = buffer) do
+    {get_in(buffer.metadata, [:wfb, :session_nonce]), buffer.payload}
   end
 
   defp session_issue_context(state, %Buffer{} = buffer) do
@@ -312,4 +315,7 @@ defmodule NervesWifibroadcast.Membrane.WFB.Decrypt do
       radio_port: state.input_stream_format && state.input_stream_format.radio_port
     }
   end
+
+  defp normalize_metadata(metadata) when is_map(metadata), do: metadata
+  defp normalize_metadata(_metadata), do: %{}
 end

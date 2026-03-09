@@ -342,8 +342,9 @@ defmodule NervesWifibroadcast.Examples.WfbDecryptSmoke.ChannelSink do
   import Bitwise
 
   alias Membrane.Time
-  alias NervesWifibroadcast.Membrane.WFB.DecryptedStreamFormat
+  alias NervesWifibroadcast.Membrane.WFB.StreamFormat
   alias NervesWifibroadcast.Radiotap
+  alias NervesWifibroadcast.WFB.Session
 
   @fec_only_flag 0x01
 
@@ -356,7 +357,7 @@ defmodule NervesWifibroadcast.Examples.WfbDecryptSmoke.ChannelSink do
   )
 
   def_input_pad(:input,
-    accepted_format: DecryptedStreamFormat,
+    accepted_format: StreamFormat,
     availability: :always,
     flow_control: :auto
   )
@@ -402,32 +403,21 @@ defmodule NervesWifibroadcast.Examples.WfbDecryptSmoke.ChannelSink do
   end
 
   @impl true
-  def handle_stream_format(:input, %DecryptedStreamFormat{} = format, _ctx, state) do
+  def handle_stream_format(:input, %StreamFormat{} = format, _ctx, state) do
     IO.puts(
-      "[wfb_decrypt_smoke #{scope_label(state)}] session epoch=#{format.epoch} fec=#{format.fec_type}:#{format.fec_k}/#{format.fec_n} channel_id=#{format_channel_id(format.channel_id)}"
+      "[wfb_decrypt_smoke #{scope_label(state)}] packet stream channel_id=#{format_channel_id(format.channel_id)}"
     )
 
-    {[],
-     %{state | link_id: format.link_id, radio_port: format.radio_port, session_format: format}}
+    {[], %{state | link_id: format.link_id, radio_port: format.radio_port}}
   end
 
   @impl true
   def handle_buffer(:input, buffer, _ctx, state) do
-    fragment = parse_fragment(buffer.payload, buffer.metadata.wfb, state.session_format)
-    radiotap = get_in(buffer.metadata, [:radio, :radiotap])
-
-    next_state = %{
-      state
-      | data_fragments: state.data_fragments + if(fragment.kind == :data, do: 1, else: 0),
-        fec_only_fragments:
-          state.fec_only_fragments + if(fragment.kind == :fec_only, do: 1, else: 0),
-        last_fragment: Map.put(fragment, :wfb, buffer.metadata.wfb),
-        last_radiotap: radiotap,
-        plaintext_bytes: state.plaintext_bytes + byte_size(buffer.payload),
-        total_fragments: state.total_fragments + 1
-    }
-
-    {[], maybe_print_preview(next_state, buffer, fragment)}
+    case get_in(buffer.metadata, [:wfb, :packet_type]) do
+      :session -> handle_session_buffer(buffer, state)
+      :data -> handle_data_buffer(buffer, state)
+      _other -> {[], state}
+    end
   end
 
   @impl true
@@ -477,7 +467,47 @@ defmodule NervesWifibroadcast.Examples.WfbDecryptSmoke.ChannelSink do
     %{state | preview_left: state.preview_left - 1}
   end
 
-  defp parse_fragment(payload, %{fragment_idx: fragment_idx}, %DecryptedStreamFormat{fec_k: fec_k})
+  defp handle_session_buffer(buffer, state) do
+    case Session.parse(buffer.payload) do
+      {:ok, session} ->
+        IO.puts(
+          "[wfb_decrypt_smoke #{scope_label(state)}] session epoch=#{session.epoch} fec=#{session.fec_type}:#{session.fec_k}/#{session.fec_n} channel_id=#{format_channel_id(session.channel_id)}"
+        )
+
+        next_state = %{
+          state
+          | last_radiotap: get_in(buffer.metadata, [:radio, :radiotap]),
+            plaintext_bytes: state.plaintext_bytes + byte_size(buffer.payload),
+            session_format: session
+        }
+
+        {[], next_state}
+
+      {:error, :invalid_session_data} ->
+        IO.puts("[wfb_decrypt_smoke #{scope_label(state)}] invalid session payload")
+        {[], state}
+    end
+  end
+
+  defp handle_data_buffer(buffer, state) do
+    fragment = parse_fragment(buffer.payload, buffer.metadata.wfb, state.session_format)
+    radiotap = get_in(buffer.metadata, [:radio, :radiotap])
+
+    next_state = %{
+      state
+      | data_fragments: state.data_fragments + if(fragment.kind == :data, do: 1, else: 0),
+        fec_only_fragments:
+          state.fec_only_fragments + if(fragment.kind == :fec_only, do: 1, else: 0),
+        last_fragment: Map.put(fragment, :wfb, buffer.metadata.wfb),
+        last_radiotap: radiotap,
+        plaintext_bytes: state.plaintext_bytes + byte_size(buffer.payload),
+        total_fragments: state.total_fragments + 1
+    }
+
+    {[], maybe_print_preview(next_state, buffer, fragment)}
+  end
+
+  defp parse_fragment(payload, %{fragment_idx: fragment_idx}, %Session{fec_k: fec_k})
        when is_integer(fec_k) and is_integer(fragment_idx) do
     base = %{kind: :parity, packet_size: nil, payload: payload, flags: nil, truncated?: false}
 
@@ -521,7 +551,7 @@ defmodule NervesWifibroadcast.Examples.WfbDecryptSmoke.ChannelSink do
 
   defp format_session(nil), do: "session=waiting"
 
-  defp format_session(%DecryptedStreamFormat{} = session_format) do
+  defp format_session(%Session{} = session_format) do
     "session_epoch=#{session_format.epoch} fec=#{session_format.fec_type}:#{session_format.fec_k}/#{session_format.fec_n}"
   end
 

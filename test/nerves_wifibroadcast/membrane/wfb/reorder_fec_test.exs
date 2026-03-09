@@ -1,35 +1,68 @@
-defmodule NervesWifibroadcast.Membrane.WFB.ReorderFecTest do
+defmodule NervesWifibroadcast.Membrane.WFB.FecDecoderTest do
   use ExUnit.Case, async: true
 
+  alias NervesWifibroadcast.Membrane.WFB.FecDecoder
   alias NervesWifibroadcast.Membrane.WFB.OrderedShardStreamFormat
-  alias NervesWifibroadcast.Membrane.WFB.ReorderFec
   alias NervesWifibroadcast.TestSupport.WFBFixtures
 
+  test "accepts a session and emits the ordered-shard stream format" do
+    stream_format = WFBFixtures.ingress_stream_format()
+    session = WFBFixtures.session_plaintext(epoch: 7, fec_k: 2, fec_n: 3)
+    state = decoder_state()
+
+    {[], state} = FecDecoder.handle_stream_format(:input, stream_format, %{}, state)
+
+    assert {actions, state} =
+             FecDecoder.handle_buffer(:input, WFBFixtures.session_buffer(session), %{}, state)
+
+    assert {:stream_format, {:output, %OrderedShardStreamFormat{} = ordered_format}} =
+             Enum.find(actions, fn
+               {:stream_format, {:output, %OrderedShardStreamFormat{}}} -> true
+               _other -> false
+             end)
+
+    assert {:notify_parent, {:wfb_session_accepted, notification}} =
+             Enum.find(actions, fn
+               {:notify_parent, {:wfb_session_accepted, _notification}} -> true
+               _other -> false
+             end)
+
+    assert ordered_format.channel_id == session.channel_id
+    assert ordered_format.epoch == session.epoch
+    assert ordered_format.fec_k == session.fec_k
+    assert ordered_format.fec_n == session.fec_n
+    assert notification.channel_id == session.channel_id
+    assert notification.epoch == session.epoch
+    assert state.current_session.session_key == session.session_key
+  end
+
   test "emits in-order source shards immediately for the front block" do
-    stream_format = WFBFixtures.decrypted_stream_format(fec_k: 2, fec_n: 3)
+    stream_format = WFBFixtures.ingress_stream_format()
+    session = WFBFixtures.session_plaintext(epoch: 1, fec_k: 2, fec_n: 3)
     shard0 = WFBFixtures.source_shard("one")
     shard1 = WFBFixtures.source_shard("two")
-    state = reorder_state()
 
-    assert {[stream_format: {:output, %OrderedShardStreamFormat{}}], state} =
-             ReorderFec.handle_stream_format(:input, stream_format, %{}, state)
+    state = decoder_state()
+    {[], state} = FecDecoder.handle_stream_format(:input, stream_format, %{}, state)
+    {_, state} = FecDecoder.handle_buffer(:input, WFBFixtures.session_buffer(session), %{}, state)
 
     assert {[buffer: {:output, buffer0}], state} =
-             ReorderFec.handle_buffer(
+             FecDecoder.handle_buffer(
                :input,
-               WFBFixtures.decrypted_buffer(shard0, 10, 0),
+               WFBFixtures.decrypted_buffer(shard0, 10, 0, session_epoch: session.epoch),
                %{},
                state
              )
 
     assert buffer0.payload == shard0
     assert buffer0.metadata.wfb.ordered_seq == 20
+    assert buffer0.metadata.wfb.session_epoch == session.epoch
     refute Map.has_key?(buffer0.metadata, :recovery)
 
     assert {[buffer: {:output, buffer1}], state} =
-             ReorderFec.handle_buffer(
+             FecDecoder.handle_buffer(
                :input,
-               WFBFixtures.decrypted_buffer(shard1, 10, 1),
+               WFBFixtures.decrypted_buffer(shard1, 10, 1, session_epoch: session.epoch),
                %{},
                state
              )
@@ -40,24 +73,22 @@ defmodule NervesWifibroadcast.Membrane.WFB.ReorderFecTest do
   end
 
   test "reorders out-of-order source shards" do
-    stream_format = WFBFixtures.decrypted_stream_format(fec_k: 2, fec_n: 3)
+    {state, session} = started_decoder_state(fec_k: 2, fec_n: 3)
     shard0 = WFBFixtures.source_shard("one")
     shard1 = WFBFixtures.source_shard("two")
-    state = reorder_state()
-    {[_stream_format], state} = ReorderFec.handle_stream_format(:input, stream_format, %{}, state)
 
     assert {[], state} =
-             ReorderFec.handle_buffer(
+             FecDecoder.handle_buffer(
                :input,
-               WFBFixtures.decrypted_buffer(shard1, 10, 1),
+               WFBFixtures.decrypted_buffer(shard1, 10, 1, session_epoch: session.epoch),
                %{},
                state
              )
 
     assert {actions, state} =
-             ReorderFec.handle_buffer(
+             FecDecoder.handle_buffer(
                :input,
-               WFBFixtures.decrypted_buffer(shard0, 10, 0),
+               WFBFixtures.decrypted_buffer(shard0, 10, 0, session_epoch: session.epoch),
                %{},
                state
              )
@@ -71,17 +102,15 @@ defmodule NervesWifibroadcast.Membrane.WFB.ReorderFecTest do
   end
 
   test "recovers a missing source shard from parity and emits only source shards" do
-    stream_format = WFBFixtures.decrypted_stream_format(fec_k: 2, fec_n: 3)
+    {state, session} = started_decoder_state(fec_k: 2, fec_n: 3)
     shard0 = WFBFixtures.source_shard("source-a")
     shard1 = WFBFixtures.source_shard("source-b")
     %{parity_shards: [parity]} = WFBFixtures.encode_block([shard0, shard1], 2, 3)
-    state = reorder_state()
-    {[_stream_format], state} = ReorderFec.handle_stream_format(:input, stream_format, %{}, state)
 
     assert {[buffer: {:output, buffer0}], state} =
-             ReorderFec.handle_buffer(
+             FecDecoder.handle_buffer(
                :input,
-               WFBFixtures.decrypted_buffer(shard0, 22, 0),
+               WFBFixtures.decrypted_buffer(shard0, 22, 0, session_epoch: session.epoch),
                %{},
                state
              )
@@ -89,9 +118,9 @@ defmodule NervesWifibroadcast.Membrane.WFB.ReorderFecTest do
     assert buffer0.payload == shard0
 
     assert {[buffer: {:output, recovered_buffer}], state} =
-             ReorderFec.handle_buffer(
+             FecDecoder.handle_buffer(
                :input,
-               WFBFixtures.decrypted_buffer(parity, 22, 2),
+               WFBFixtures.decrypted_buffer(parity, 22, 2, session_epoch: session.epoch),
                %{},
                state
              )
@@ -103,27 +132,41 @@ defmodule NervesWifibroadcast.Membrane.WFB.ReorderFecTest do
   end
 
   test "tracks recovery provenance across multiple receiver indexes" do
-    stream_format =
-      WFBFixtures.decrypted_stream_format(fec_k: 2, fec_n: 3, interfaces: ["wlan0", "wlan1"])
-
+    stream_format = WFBFixtures.ingress_stream_format(interfaces: ["wlan0", "wlan1"])
+    session = WFBFixtures.session_plaintext(epoch: 1, fec_k: 2, fec_n: 3)
     shard0 = WFBFixtures.source_shard("source-a")
     shard1 = WFBFixtures.source_shard("source-b")
     %{parity_shards: [parity]} = WFBFixtures.encode_block([shard0, shard1], 2, 3)
-    state = reorder_state()
-    {[_stream_format], state} = ReorderFec.handle_stream_format(:input, stream_format, %{}, state)
+
+    state = decoder_state()
+    {[], state} = FecDecoder.handle_stream_format(:input, stream_format, %{}, state)
+
+    {_, state} =
+      FecDecoder.handle_buffer(
+        :input,
+        WFBFixtures.session_buffer(session, interfaces: ["wlan0", "wlan1"]),
+        %{},
+        state
+      )
 
     assert {[buffer: {:output, _buffer0}], state} =
-             ReorderFec.handle_buffer(
+             FecDecoder.handle_buffer(
                :input,
-               WFBFixtures.decrypted_buffer(shard0, 33, 0, receiver_idx: 0),
+               WFBFixtures.decrypted_buffer(shard0, 33, 0,
+                 receiver_idx: 0,
+                 session_epoch: session.epoch
+               ),
                %{},
                state
              )
 
     assert {[buffer: {:output, recovered_buffer}], _state} =
-             ReorderFec.handle_buffer(
+             FecDecoder.handle_buffer(
                :input,
-               WFBFixtures.decrypted_buffer(parity, 33, 2, receiver_idx: 1),
+               WFBFixtures.decrypted_buffer(parity, 33, 2,
+                 receiver_idx: 1,
+                 session_epoch: session.epoch
+               ),
                %{},
                state
              )
@@ -133,34 +176,32 @@ defmodule NervesWifibroadcast.Membrane.WFB.ReorderFecTest do
   end
 
   test "flushes older unfinished blocks when a newer block becomes decodable" do
-    stream_format = WFBFixtures.decrypted_stream_format(fec_k: 2, fec_n: 3)
+    {state, session} = started_decoder_state(fec_k: 2, fec_n: 3)
     old_shard0 = WFBFixtures.source_shard("old-0")
     new_shard0 = WFBFixtures.source_shard("new-0")
     new_shard1 = WFBFixtures.source_shard("new-1")
     %{parity_shards: [new_parity]} = WFBFixtures.encode_block([new_shard0, new_shard1], 2, 3)
-    state = reorder_state()
-    {[_stream_format], state} = ReorderFec.handle_stream_format(:input, stream_format, %{}, state)
 
     assert {[buffer: {:output, _old_buffer0}], state} =
-             ReorderFec.handle_buffer(
+             FecDecoder.handle_buffer(
                :input,
-               WFBFixtures.decrypted_buffer(old_shard0, 100, 0),
+               WFBFixtures.decrypted_buffer(old_shard0, 100, 0, session_epoch: session.epoch),
                %{},
                state
              )
 
     assert {[], state} =
-             ReorderFec.handle_buffer(
+             FecDecoder.handle_buffer(
                :input,
-               WFBFixtures.decrypted_buffer(new_shard0, 101, 0),
+               WFBFixtures.decrypted_buffer(new_shard0, 101, 0, session_epoch: session.epoch),
                %{},
                state
              )
 
     assert {actions, state} =
-             ReorderFec.handle_buffer(
+             FecDecoder.handle_buffer(
                :input,
-               WFBFixtures.decrypted_buffer(new_parity, 101, 2),
+               WFBFixtures.decrypted_buffer(new_parity, 101, 2, session_epoch: session.epoch),
                %{},
                state
              )
@@ -182,23 +223,21 @@ defmodule NervesWifibroadcast.Membrane.WFB.ReorderFecTest do
   end
 
   test "ignores duplicate fragments" do
-    stream_format = WFBFixtures.decrypted_stream_format(fec_k: 2, fec_n: 3)
+    {state, session} = started_decoder_state(fec_k: 2, fec_n: 3)
     shard0 = WFBFixtures.source_shard("one")
-    state = reorder_state()
-    {[_stream_format], state} = ReorderFec.handle_stream_format(:input, stream_format, %{}, state)
 
     assert {[buffer: {:output, _buffer0}], state} =
-             ReorderFec.handle_buffer(
+             FecDecoder.handle_buffer(
                :input,
-               WFBFixtures.decrypted_buffer(shard0, 10, 0),
+               WFBFixtures.decrypted_buffer(shard0, 10, 0, session_epoch: session.epoch),
                %{},
                state
              )
 
     assert {[], state} =
-             ReorderFec.handle_buffer(
+             FecDecoder.handle_buffer(
                :input,
-               WFBFixtures.decrypted_buffer(shard0, 10, 0),
+               WFBFixtures.decrypted_buffer(shard0, 10, 0, session_epoch: session.epoch),
                %{},
                state
              )
@@ -207,28 +246,28 @@ defmodule NervesWifibroadcast.Membrane.WFB.ReorderFecTest do
   end
 
   test "emits opt-in periodic stats notifications" do
-    stream_format = WFBFixtures.decrypted_stream_format(fec_k: 2, fec_n: 3)
+    session = WFBFixtures.session_plaintext(epoch: 1, fec_k: 2, fec_n: 3)
+    stream_format = WFBFixtures.ingress_stream_format()
     shard0 = WFBFixtures.source_shard("one")
-    state = reorder_state(stats_interval_ms: 1_000)
+    state = decoder_state(stats_interval_ms: 1_000)
 
-    assert {[start_timer: {:stats, _interval}], state} = ReorderFec.handle_playing(%{}, state)
-
-    assert {[stream_format: {:output, %OrderedShardStreamFormat{}}], state} =
-             ReorderFec.handle_stream_format(:input, stream_format, %{}, state)
+    assert {[start_timer: {:stats, _interval}], state} = FecDecoder.handle_playing(%{}, state)
+    {[], state} = FecDecoder.handle_stream_format(:input, stream_format, %{}, state)
+    {_, state} = FecDecoder.handle_buffer(:input, WFBFixtures.session_buffer(session), %{}, state)
 
     assert {[buffer: {:output, _buffer0}], state} =
-             ReorderFec.handle_buffer(
+             FecDecoder.handle_buffer(
                :input,
-               WFBFixtures.decrypted_buffer(shard0, 10, 0),
+               WFBFixtures.decrypted_buffer(shard0, 10, 0, session_epoch: session.epoch),
                %{},
                state
              )
 
     assert {[notify_parent: {:wfb_reorder_fec_stats, stats}], state} =
-             ReorderFec.handle_tick(:stats, %{}, state)
+             FecDecoder.handle_tick(:stats, %{}, state)
 
     assert stats.channel_id == stream_format.channel_id
-    assert stats.epoch == stream_format.epoch
+    assert stats.epoch == session.epoch
     assert stats.link_id == stream_format.link_id
     assert stats.radio_port == stream_format.radio_port
     assert stats.interfaces == stream_format.interfaces
@@ -241,15 +280,32 @@ defmodule NervesWifibroadcast.Membrane.WFB.ReorderFecTest do
     assert stats.counters.fec_recovered_fragments == 0
 
     assert {[notify_parent: {:wfb_reorder_fec_stats, next_stats}], _state} =
-             ReorderFec.handle_tick(:stats, %{}, state)
+             FecDecoder.handle_tick(:stats, %{}, state)
 
     assert next_stats.counters.emitted_source_shards == 0
     assert next_stats.counters.lost_source_shards == 0
     assert next_stats.blocks_in_ring == 1
   end
 
-  defp reorder_state(opts \\ []) do
-    {[], state} = ReorderFec.handle_init(%{}, struct(ReorderFec, opts))
+  defp started_decoder_state(opts) do
+    stream_format = WFBFixtures.ingress_stream_format(opts)
+
+    session =
+      WFBFixtures.session_plaintext(
+        epoch: Keyword.get(opts, :epoch, 1),
+        fec_k: Keyword.get(opts, :fec_k, 2),
+        fec_n: Keyword.get(opts, :fec_n, 3),
+        interfaces: Keyword.get(opts, :interfaces, ["wlan0"])
+      )
+
+    state = decoder_state(Keyword.take(opts, [:stats_interval_ms, :min_epoch, :ring_size]))
+    {[], state} = FecDecoder.handle_stream_format(:input, stream_format, %{}, state)
+    {_, state} = FecDecoder.handle_buffer(:input, WFBFixtures.session_buffer(session), %{}, state)
+    {state, session}
+  end
+
+  defp decoder_state(opts \\ []) do
+    {[], state} = FecDecoder.handle_init(%{}, struct(FecDecoder, opts))
     state
   end
 end

@@ -48,6 +48,17 @@ defmodule NervesWifibroadcast.Membrane.WFB.Router do
     }
   end
 
+  @spec build_data_packet(non_neg_integer(), binary()) :: binary()
+  def build_data_packet(data_nonce, payload) when is_integer(data_nonce) and data_nonce >= 0 do
+    <<@packet_type_data, data_nonce::big-64, payload::binary>>
+  end
+
+  @spec build_session_packet(binary(), binary()) :: binary()
+  def build_session_packet(session_nonce, payload)
+      when is_binary(session_nonce) and byte_size(session_nonce) == @session_nonce_size do
+    <<@packet_type_session, session_nonce::binary-size(@session_nonce_size), payload::binary>>
+  end
+
   @spec normalize_radio_ports!([term()]) :: MapSet.t()
   def normalize_radio_ports!(radio_ports) when is_list(radio_ports) do
     radio_ports
@@ -108,9 +119,10 @@ defmodule NervesWifibroadcast.Membrane.WFB.Router do
          {:ok, link_id, radio_port} <- split_channel_id(channel_id),
          :ok <- ensure_link_id_matches(link_id, state.link_id),
          :ok <- ensure_radio_port_enabled(radio_port, state.enabled_radio_ports),
-         {:ok, wfb_metadata} <- parse_wfb_packet(wfb_packet, channel_id, link_id, radio_port) do
+         {:ok, packet_payload, wfb_metadata} <-
+           parse_wfb_packet(wfb_packet, channel_id, link_id, radio_port) do
       routed_buffer =
-        %Buffer{buffer | payload: wfb_packet}
+        %Buffer{buffer | payload: packet_payload}
         |> put_metadata(:ieee80211, ieee80211)
         |> put_metadata(:wfb, wfb_metadata)
 
@@ -170,16 +182,17 @@ defmodule NervesWifibroadcast.Membrane.WFB.Router do
   end
 
   defp parse_wfb_packet(
-         <<@packet_type_data, data_nonce::big-64, _rest::binary>>,
+         <<@packet_type_data, data_nonce::big-64, payload::binary>>,
          channel_id,
          link_id,
          radio_port
        ) do
-    {:ok,
+    {:ok, payload,
      %{
        block_idx: data_nonce >>> 8,
        channel_id: channel_id,
        data_nonce: data_nonce,
+       framing: :inner_payload,
        fragment_idx: data_nonce &&& 0xFF,
        link_id: link_id,
        packet_type: :data,
@@ -190,16 +203,18 @@ defmodule NervesWifibroadcast.Membrane.WFB.Router do
   end
 
   defp parse_wfb_packet(
-         <<@packet_type_session, session_nonce::binary-size(@session_nonce_size), _rest::binary>>,
+         <<@packet_type_session, session_nonce::binary-size(@session_nonce_size),
+           payload::binary>>,
          channel_id,
          link_id,
          radio_port
        ) do
-    {:ok,
+    {:ok, payload,
      %{
        block_idx: nil,
        channel_id: channel_id,
        data_nonce: nil,
+       framing: :inner_payload,
        fragment_idx: nil,
        link_id: link_id,
        packet_type: :session,

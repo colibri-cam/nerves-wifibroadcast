@@ -122,7 +122,7 @@ defmodule NervesWifibroadcast.Membrane.Radio.SourceTest do
     assert {[buffer: {^pad, %Buffer{} = buffer}], state} =
              Source.handle_info({:"$socket", socket("wlan0"), :select, handle}, %{}, state)
 
-    assert buffer.payload == data_packet(0x0102030405060708, <<0x08, 0x01>>)
+    assert buffer.payload == <<0x08, 0x01>>
     assert buffer.metadata.ieee80211.header_len == 24
     assert buffer.metadata.wfb.channel_id == @channel_id
     assert buffer.metadata.wfb.packet_type == :data

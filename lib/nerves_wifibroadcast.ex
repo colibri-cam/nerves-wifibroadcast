@@ -1,6 +1,8 @@
 defmodule NervesWifibroadcast do
   require Bundlex.Port
 
+  alias NervesWifibroadcast.Radio.Control
+
   @moduledoc """
   Documentation for `NervesWfbNg`.
   """
@@ -9,31 +11,23 @@ defmodule NervesWifibroadcast do
   Sets card into monitor mode.
   """
   def set_card_monitor_mode(card) do
-    with {:ok, _} <- mt_cmd("ip", ["link", "set", card, "down"]),
-         {:ok, _} <- mt_cmd("iw", ["dev", card, "set", "monitor", "otherbss"]),
-         {:ok, _} <- mt_cmd("ip", ["link", "set", card, "up"]),
-         do: :ok
+    Control.set_monitor_mode(card)
   end
 
   @doc """
-  Sets channel and band width on a card
+  Sets channel and bandwidth on a card.
   """
   def set_card_channel(card, channel, width) do
-    channel = to_string(channel)
-    width = to_string(width)
-
-    with {:ok, _} <- mt_cmd("iw", ["dev", card, "set", "channel", channel, width]),
-         do: :ok
+    Control.set_channel(card, channel, width)
   end
 
   @doc """
-  Sets power index on card
+  Sets card TX power using explicit wfb-ng driver semantics.
+
+  Supported drivers are `:rtl8812au` and `:rtl8812eu`.
   """
-  def set_card_tx_power(card, mode \\ "fixed", power_index) do
-    with true <- power_index >= 0 and power_index <= 63,
-         power_index = to_string(-power_index * 100),
-         {:ok, _} <- mt_cmd("iw", ["dev", card, "set", "txpower", mode, power_index]),
-         do: :ok
+  def set_card_tx_power(card, driver, dbm) when is_integer(dbm) and dbm >= 0 do
+    Control.set_card_tx_power(card, driver, dbm)
   end
 
   @doc """

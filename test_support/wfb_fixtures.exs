@@ -1,9 +1,12 @@
 defmodule NervesWifibroadcast.TestSupport.WFBFixtures do
   import Bitwise
 
+  alias Membrane.Buffer
+  alias Membrane.RemoteStream
   alias NervesWifibroadcast.Membrane.WFB.DecryptedStreamFormat
   alias NervesWifibroadcast.Membrane.WFB.OrderedShardStreamFormat
   alias NervesWifibroadcast.Membrane.WFB.StreamFormat
+  alias NervesWifibroadcast.Membrane.WFB.WrappedPayloadStreamFormat
   alias NervesWifibroadcast.WFB.CryptoNif
   alias NervesWifibroadcast.WFB.FecNif
 
@@ -30,7 +33,24 @@ defmodule NervesWifibroadcast.TestSupport.WFBFixtures do
 
     %StreamFormat{
       channel_id: channel_id(link_id, radio_port),
+      encrypted?: Keyword.get(opts, :encrypted?, true),
       interfaces: Keyword.get(opts, :interfaces, @default_interfaces),
+      link_id: link_id,
+      radio_port: radio_port
+    }
+  end
+
+  def remote_stream_format do
+    %RemoteStream{type: :packetized, content_format: nil}
+  end
+
+  def wrapped_payload_stream_format(opts \\ []) do
+    link_id = Keyword.get(opts, :link_id, @default_link_id)
+    radio_port = Keyword.get(opts, :radio_port, @default_radio_port)
+
+    %WrappedPayloadStreamFormat{
+      channel_id: channel_id(link_id, radio_port),
+      interfaces: Keyword.get(opts, :interfaces, []),
       link_id: link_id,
       radio_port: radio_port
     }
@@ -114,6 +134,23 @@ defmodule NervesWifibroadcast.TestSupport.WFBFixtures do
     {Map.merge(session, %{packet: packet, session_nonce: session_nonce}), packet}
   end
 
+  def session_packet_payload(<<0x02, _session_nonce::binary-size(24), payload::binary>>),
+    do: payload
+
+  def session_buffer(session, opts \\ []) do
+    session =
+      Map.put_new(
+        session,
+        :session_nonce,
+        Keyword.get(opts, :session_nonce, :crypto.strong_rand_bytes(24))
+      )
+
+    %Membrane.Buffer{
+      payload: Map.fetch!(session, :plaintext),
+      metadata: session_metadata(session, opts)
+    }
+  end
+
   def fragment_plaintext(opts \\ []) do
     flags = Keyword.get(opts, :flags, 0)
     payload = Keyword.get(opts, :payload, <<1, 2, 3, 4>>)
@@ -134,6 +171,8 @@ defmodule NervesWifibroadcast.TestSupport.WFBFixtures do
        plaintext: plaintext
      }, packet}
   end
+
+  def data_packet_payload(<<0x01, _data_nonce::big-64, payload::binary>>), do: payload
 
   def session_metadata(session, opts \\ []) do
     metadata = %{
@@ -172,8 +211,74 @@ defmodule NervesWifibroadcast.TestSupport.WFBFixtures do
 
   def rx_key_file_content(keys), do: keys.rx_secretkey <> keys.tx_publickey
 
+  def tx_key_file_content(keys), do: keys.tx_secretkey <> keys.rx_publickey
+
+  def remote_packet_buffer(payload, opts \\ []) do
+    %Buffer{payload: payload, metadata: Keyword.get(opts, :metadata, %{})}
+  end
+
+  def tx_session_buffer(session, opts \\ []) do
+    metadata = %{
+      wfb: %{
+        channel_id: session.channel_id,
+        link_id: session.link_id,
+        packet_type: :session,
+        packet_type_byte: 0x02,
+        radio_port: session.radio_port,
+        session_nonce: nil
+      },
+      wfb_session:
+        struct(
+          NervesWifibroadcast.WFB.Session,
+          Map.take(session, [:channel_id, :epoch, :fec_k, :fec_n, :fec_type, :session_key, :tags])
+        )
+    }
+
+    %Buffer{payload: session.plaintext, metadata: maybe_put_radio_metadata(metadata, opts)}
+  end
+
+  def tx_data_buffer(payload, session, block_idx, fragment_idx, opts \\ []) do
+    link_id = Keyword.get(opts, :link_id, session.link_id)
+    radio_port = Keyword.get(opts, :radio_port, session.radio_port)
+
+    metadata = %{
+      wfb: %{
+        block_idx: block_idx,
+        channel_id: channel_id(link_id, radio_port),
+        data_nonce: (block_idx <<< 8) + fragment_idx,
+        fec_k: session.fec_k,
+        fec_n: session.fec_n,
+        fec_type: session.fec_type,
+        fragment_idx: fragment_idx,
+        link_id: link_id,
+        packet_type: :data,
+        packet_type_byte: 0x01,
+        radio_port: radio_port,
+        session_epoch: session.epoch,
+        session_nonce: nil,
+        shard_role: Keyword.get(opts, :shard_role, :source)
+      },
+      wfb_session:
+        struct(
+          NervesWifibroadcast.WFB.Session,
+          Map.take(session, [:channel_id, :epoch, :fec_k, :fec_n, :fec_type, :session_key, :tags])
+        )
+    }
+
+    %Buffer{payload: payload, metadata: maybe_put_radio_metadata(metadata, opts)}
+  end
+
   def source_shard(payload, flags \\ 0) do
     <<flags, byte_size(payload)::big-16, payload::binary>>
+  end
+
+  def wrapped_payload_buffer(payload, opts \\ []) do
+    flags = Keyword.get(opts, :flags, 0)
+
+    %Buffer{
+      payload: source_shard(payload, flags),
+      metadata: Keyword.get(opts, :metadata, %{})
+    }
   end
 
   def encode_block(source_shards, k, n) do

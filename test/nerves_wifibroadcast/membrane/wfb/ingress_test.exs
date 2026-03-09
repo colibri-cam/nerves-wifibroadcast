@@ -31,7 +31,7 @@ defmodule NervesWifibroadcast.Membrane.WFB.IngressTest do
     assert {[buffer: {^pad, routed_buffer}], state} =
              Ingress.handle_buffer(:input, buffer, %{}, state)
 
-    assert routed_buffer.payload == data_packet(0x0102030405060708, <<0xAA, 0xBB>>)
+    assert routed_buffer.payload == <<0xAA, 0xBB>>
     assert routed_buffer.metadata.ieee80211.header_len == 24
     assert routed_buffer.metadata.wfb.channel_id == @channel_id
     assert routed_buffer.metadata.wfb.packet_type == :data
@@ -60,7 +60,7 @@ defmodule NervesWifibroadcast.Membrane.WFB.IngressTest do
     assert {[buffer: {^pad, routed_buffer}], _state} =
              Ingress.handle_buffer(:input, buffer, %{}, state)
 
-    assert routed_buffer.payload == session_packet(session_nonce, <<0x11, 0x22>>)
+    assert routed_buffer.payload == <<0x11, 0x22>>
     assert routed_buffer.metadata.wfb.packet_type == :session
     assert routed_buffer.metadata.wfb.session_nonce == session_nonce
   end

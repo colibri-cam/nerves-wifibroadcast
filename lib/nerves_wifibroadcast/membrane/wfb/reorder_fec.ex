@@ -1,6 +1,7 @@
 defmodule NervesWifibroadcast.Membrane.WFB.ReorderFec do
   @moduledoc """
-  Reorders decrypted WFB fragments and applies FEC recovery.
+  Consumes WFB session/data packets, applies FEC recovery, and emits ordered
+  source shards.
 
   The element emits only ordered source shards (`fragment_idx < fec_k`) and keeps
   the shard payload as `wpacket_hdr_t <> payload` for later stages.
@@ -12,21 +13,23 @@ defmodule NervesWifibroadcast.Membrane.WFB.ReorderFec do
 
   alias Membrane.Buffer
   alias Membrane.Time
-  alias NervesWifibroadcast.Membrane.WFB.DecryptedStreamFormat
   alias NervesWifibroadcast.Membrane.WFB.OrderedShardStreamFormat
+  alias NervesWifibroadcast.Membrane.WFB.StreamFormat
   alias NervesWifibroadcast.WFB.FecNif
+  alias NervesWifibroadcast.WFB.Session
 
   @max_block_idx (1 <<< 55) - 1
   @stats_timer :stats
 
   def_options(
+    min_epoch: [spec: non_neg_integer(), default: 0],
     ring_size: [spec: pos_integer(), default: 40],
     stats_interval_ms: [spec: pos_integer() | nil, default: nil]
   )
 
   def_input_pad(:input,
     availability: :always,
-    accepted_format: DecryptedStreamFormat,
+    accepted_format: StreamFormat,
     flow_control: :auto
   )
 
@@ -39,29 +42,46 @@ defmodule NervesWifibroadcast.Membrane.WFB.ReorderFec do
   @impl true
   def handle_init(_ctx, opts) do
     state = %{
+      accepted_session_payload: nil,
       codec: nil,
       counters: %{
+        data_without_session_drops: 0,
         duplicate_fragments: 0,
+        duplicate_session_drops: 0,
         emitted_source_shards: 0,
         fec_recovered_fragments: 0,
+        invalid_fec_drops: 0,
         invalid_fragment_drops: 0,
+        invalid_session_data_drops: 0,
         lost_source_shards: 0,
+        old_epoch_drops: 0,
         ring_override_count: 0,
-        stale_block_drops: 0
+        stale_block_drops: 0,
+        wrong_channel_id_drops: 0
       },
       current_format: nil,
+      current_session: nil,
+      epoch_floor: opts.min_epoch,
+      input_stream_format: nil,
       last_emitted_seq: nil,
       last_known_block: nil,
+      min_epoch: opts.min_epoch,
       order: [],
       ring_size: opts.ring_size,
       stats_baseline: %{
+        data_without_session_drops: 0,
         duplicate_fragments: 0,
+        duplicate_session_drops: 0,
         emitted_source_shards: 0,
         fec_recovered_fragments: 0,
+        invalid_fec_drops: 0,
         invalid_fragment_drops: 0,
+        invalid_session_data_drops: 0,
         lost_source_shards: 0,
+        old_epoch_drops: 0,
         ring_override_count: 0,
-        stale_block_drops: 0
+        stale_block_drops: 0,
+        wrong_channel_id_drops: 0
       },
       stats_interval_ms: opts.stats_interval_ms,
       blocks: %{}
@@ -85,24 +105,11 @@ defmodule NervesWifibroadcast.Membrane.WFB.ReorderFec do
   def handle_playing(_ctx, state), do: {[], state}
 
   @impl true
-  def handle_stream_format(:input, %DecryptedStreamFormat{} = format, _ctx, state) do
-    with codec when is_reference(codec) <- FecNif.new(format.fec_k, format.fec_n) do
-      next_state =
-        state
-        |> Map.put(:codec, codec)
-        |> Map.put(:current_format, format)
-        |> Map.put(:last_emitted_seq, nil)
-        |> Map.put(:last_known_block, nil)
-        |> Map.put(:order, [])
-        |> Map.put(:stats_baseline, state.counters)
-        |> Map.put(:blocks, %{})
+  def handle_stream_format(:input, %StreamFormat{} = format, _ctx, state) do
+    next_state =
+      reset_decoder_state(%{state | input_stream_format: format, accepted_session_payload: nil})
 
-      {[stream_format: {:output, output_stream_format(format)}], next_state}
-    else
-      :error ->
-        raise ArgumentError,
-              "unable to initialize FEC codec for k=#{format.fec_k} n=#{format.fec_n}"
-    end
+    {[], next_state}
   end
 
   @impl true
@@ -117,14 +124,51 @@ defmodule NervesWifibroadcast.Membrane.WFB.ReorderFec do
   end
 
   @impl true
-  def handle_buffer(:input, %Buffer{} = buffer, _ctx, %{current_format: nil} = state) do
-    _buffer = buffer
-    {[], state}
+  def handle_buffer(:input, %Buffer{} = buffer, _ctx, state) do
+    case get_in(buffer.metadata, [:wfb, :packet_type]) do
+      :session -> handle_session_packet(buffer, state)
+      :data -> handle_data_buffer(buffer, state)
+      _other -> {[], state}
+    end
   end
 
-  def handle_buffer(:input, %Buffer{} = buffer, _ctx, state) do
+  defp handle_session_packet(%Buffer{} = _buffer, %{input_stream_format: nil} = state),
+    do: {[], state}
+
+  defp handle_session_packet(%Buffer{} = buffer, state) do
+    if duplicate_accepted_session_payload?(state, buffer.payload) do
+      {[], increment_counter(state, :duplicate_session_drops)}
+    else
+      with {:ok, session} <- Session.parse(buffer.payload),
+           :ok <- validate_session(session, buffer, state) do
+        maybe_install_session(state, session, buffer.payload)
+      else
+        {:error, :invalid_session_data} ->
+          {notify_session_issue(state, buffer, :invalid_session_data),
+           increment_counter(state, :invalid_session_data_drops)}
+
+        {:error, :old_epoch} ->
+          {notify_session_issue(state, buffer, :old_epoch),
+           increment_counter(state, :old_epoch_drops)}
+
+        {:error, :wrong_channel_id} ->
+          {notify_session_issue(state, buffer, :wrong_channel_id),
+           increment_counter(state, :wrong_channel_id_drops)}
+
+        {:error, :invalid_fec} ->
+          {notify_session_issue(state, buffer, :invalid_fec),
+           increment_counter(state, :invalid_fec_drops)}
+      end
+    end
+  end
+
+  defp handle_data_buffer(%Buffer{} = _buffer, %{current_session: nil} = state) do
+    {[], increment_counter(state, :data_without_session_drops)}
+  end
+
+  defp handle_data_buffer(%Buffer{} = buffer, state) do
     with {:ok, block_idx, fragment_idx} <- fragment_ref(buffer),
-         :ok <- validate_fragment(block_idx, fragment_idx, state.current_format),
+         :ok <- validate_fragment(block_idx, fragment_idx, state.current_session),
          {:ok, state, actions, block_idx} <- ensure_block(state, block_idx),
          {:ok, state} <- store_fragment(state, block_idx, fragment_idx, buffer) do
       {contiguous_actions, state} = maybe_emit_contiguous_front(state, block_idx)
@@ -155,12 +199,86 @@ defmodule NervesWifibroadcast.Membrane.WFB.ReorderFec do
     end
   end
 
-  defp validate_fragment(block_idx, fragment_idx, %DecryptedStreamFormat{fec_n: fec_n})
+  defp validate_fragment(block_idx, fragment_idx, %Session{fec_n: fec_n})
        when block_idx >= 0 and block_idx <= @max_block_idx and fragment_idx >= 0 and
               fragment_idx < fec_n,
        do: :ok
 
   defp validate_fragment(_block_idx, _fragment_idx, _format), do: {:error, :invalid_fragment}
+
+  defp validate_session(%Session{} = session, %Buffer{} = buffer, state) do
+    expected_channel_id = get_in(buffer.metadata, [:wfb, :channel_id])
+
+    cond do
+      session.epoch < max(state.min_epoch, state.epoch_floor) ->
+        {:error, :old_epoch}
+
+      session.channel_id != expected_channel_id ->
+        {:error, :wrong_channel_id}
+
+      session.fec_type != Session.fec_vdm_rs() ->
+        {:error, :invalid_fec}
+
+      session.fec_n < 1 ->
+        {:error, :invalid_fec}
+
+      session.fec_k < 1 or session.fec_k > session.fec_n ->
+        {:error, :invalid_fec}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp maybe_install_session(state, %Session{} = session, accepted_session_payload) do
+    if session_changed?(state.current_session, session) do
+      with codec when is_reference(codec) <- FecNif.new(session.fec_k, session.fec_n) do
+        current_format = output_stream_format(state.input_stream_format, session)
+
+        next_state = %{
+          state
+          | accepted_session_payload: accepted_session_payload,
+            codec: codec,
+            current_format: current_format,
+            current_session: session,
+            epoch_floor: session.epoch,
+            last_emitted_seq: nil,
+            last_known_block: nil,
+            order: [],
+            stats_baseline: state.counters,
+            blocks: %{}
+        }
+
+        actions = [
+          stream_format: {:output, current_format},
+          notify_parent:
+            {:wfb_session_accepted, session_notification(session, state.input_stream_format)}
+        ]
+
+        {actions, next_state}
+      else
+        :error ->
+          raise ArgumentError,
+                "unable to initialize FEC codec for k=#{session.fec_k} n=#{session.fec_n}"
+      end
+    else
+      {[], %{state | accepted_session_payload: accepted_session_payload}}
+    end
+  end
+
+  defp reset_decoder_state(state) do
+    %{
+      state
+      | codec: nil,
+        current_format: nil,
+        current_session: nil,
+        last_emitted_seq: nil,
+        last_known_block: nil,
+        order: [],
+        stats_baseline: state.counters,
+        blocks: %{}
+    }
+  end
 
   defp ensure_block(state, block_idx) do
     cond do
@@ -386,7 +504,8 @@ defmodule NervesWifibroadcast.Membrane.WFB.ReorderFec do
   defp emit_source_fragment(state, block_idx, fragment_idx, emission) do
     block = Map.fetch!(state.blocks, block_idx)
     %Buffer{} = buffer = source_fragment(block, fragment_idx)
-    ordered_seq = block_idx * state.current_format.fec_k + fragment_idx
+    buffer = put_wfb_session_metadata(buffer, state.current_session)
+    ordered_seq = block_idx * state.current_session.fec_k + fragment_idx
     lost = lost_between(state.last_emitted_seq, ordered_seq)
 
     metadata =
@@ -426,13 +545,13 @@ defmodule NervesWifibroadcast.Membrane.WFB.ReorderFec do
 
   defp ensure_recovered_sources(state, block_idx) do
     block = Map.fetch!(state.blocks, block_idx)
-    missing = missing_source_indexes(block, state.current_format.fec_k)
+    missing = missing_source_indexes(block, state.current_session.fec_k)
 
     if missing == [] do
       {state, 0}
     else
       shard_size = block.max_shard_size
-      {shards, indexes, receiver_mask} = decode_inputs(block, state.current_format)
+      {shards, indexes, receiver_mask} = decode_inputs(block, state.current_session)
 
       case FecNif.decode(state.codec, shards, indexes, missing, shard_size) do
         {:ok, recovered_shards} ->
@@ -450,7 +569,7 @@ defmodule NervesWifibroadcast.Membrane.WFB.ReorderFec do
     end
   end
 
-  defp decode_inputs(block, %DecryptedStreamFormat{fec_k: fec_k, fec_n: fec_n}) do
+  defp decode_inputs(block, %Session{fec_k: fec_k, fec_n: fec_n}) do
     {shards, indexes, _next_parity_idx, receiver_mask} =
       Enum.reduce(0..(fec_k - 1), {[], [], fec_k, 0}, fn idx,
                                                          {acc_shards, acc_indexes,
@@ -551,16 +670,67 @@ defmodule NervesWifibroadcast.Membrane.WFB.ReorderFec do
     %{state | blocks: Map.put(state.blocks, block.block_idx, block)}
   end
 
-  defp output_stream_format(%DecryptedStreamFormat{} = format) do
+  defp output_stream_format(%StreamFormat{} = input_stream_format, %Session{} = session) do
     %OrderedShardStreamFormat{
-      channel_id: format.channel_id,
-      epoch: format.epoch,
-      fec_k: format.fec_k,
-      fec_n: format.fec_n,
-      fec_type: format.fec_type,
-      interfaces: format.interfaces,
-      link_id: format.link_id,
-      radio_port: format.radio_port
+      channel_id: input_stream_format.channel_id,
+      epoch: session.epoch,
+      fec_k: session.fec_k,
+      fec_n: session.fec_n,
+      fec_type: session.fec_type,
+      interfaces: input_stream_format.interfaces,
+      link_id: input_stream_format.link_id,
+      radio_port: input_stream_format.radio_port
+    }
+  end
+
+  defp put_wfb_session_metadata(%Buffer{} = buffer, %Session{} = session) do
+    metadata =
+      normalize_metadata(buffer.metadata)
+      |> Map.update(:wfb, %{}, fn wfb ->
+        Map.merge(wfb, %{
+          fec_k: session.fec_k,
+          fec_n: session.fec_n,
+          fec_type: session.fec_type,
+          session_epoch: session.epoch
+        })
+      end)
+      |> Map.put(:wfb_session, session)
+
+    %Buffer{buffer | metadata: metadata}
+  end
+
+  defp duplicate_accepted_session_payload?(state, payload) do
+    is_binary(state.accepted_session_payload) and state.accepted_session_payload == payload
+  end
+
+  defp session_changed?(nil, %Session{}), do: true
+
+  defp session_changed?(%Session{} = current_session, %Session{} = session),
+    do: current_session != session
+
+  defp notify_session_issue(state, %Buffer{} = buffer, reason) do
+    [notify_parent: {:wfb_session_rejected, reason, session_issue_context(state, buffer)}]
+  end
+
+  defp session_notification(%Session{} = session, %StreamFormat{} = input_stream_format) do
+    %{
+      channel_id: session.channel_id,
+      epoch: session.epoch,
+      fec_k: session.fec_k,
+      fec_n: session.fec_n,
+      fec_type: session.fec_type,
+      interfaces: input_stream_format.interfaces,
+      link_id: input_stream_format.link_id,
+      radio_port: input_stream_format.radio_port
+    }
+  end
+
+  defp session_issue_context(state, %Buffer{} = buffer) do
+    %{
+      channel_id: get_in(buffer.metadata, [:wfb, :channel_id]),
+      interfaces: state.input_stream_format && state.input_stream_format.interfaces,
+      link_id: state.input_stream_format && state.input_stream_format.link_id,
+      radio_port: state.input_stream_format && state.input_stream_format.radio_port
     }
   end
 

@@ -1,5 +1,65 @@
 # Examples
 
+## TX Pipeline Snippet
+
+There is not a full TX smoke script yet, but the current TX Membrane shape is:
+
+```elixir
+alias Membrane.Pad
+alias NervesWifibroadcast.Membrane.Radio.Sink
+alias NervesWifibroadcast.Membrane.WFB.Encrypt
+alias NervesWifibroadcast.Membrane.WFB.FecEncoder
+alias NervesWifibroadcast.Membrane.WFB.PayloadWrap
+
+children = [
+  payload_wrap_4: %PayloadWrap{link_id: 0x7505D6, radio_port: 4},
+  fec_encoder_4: %FecEncoder{k: 8, n: 12, fec_timeout_ms: 20},
+  encrypt_4: %Encrypt{key_path: "drone.key"},
+  radio_sink: %Sink{
+    interfaces: ["wlan0mon", "wlan1mon"],
+    bandwidth: 20,
+    mcs_index: 1,
+    short_gi: :long
+  }
+]
+
+links = [
+  link(:payload_wrap_4)
+  |> to(:fec_encoder_4)
+  |> to(:encrypt_4)
+  |> via_in(Pad.ref(:input, 4))
+  |> to(:radio_sink)
+]
+```
+
+By default `Radio.Sink` opens TX sockets with qdisc bypass enabled for the
+lowest-latency path.
+
+If you want Linux `tc` / routing rules to classify TX packets, enable qdisc and
+set a mark base:
+
+```elixir
+%Sink{
+  interfaces: ["wlan0mon", "wlan1mon"],
+  bandwidth: 20,
+  mcs_index: 3,
+  short_gi: :short,
+  use_qdisc?: true,
+  fwmark_base: 100
+}
+```
+
+Current mark policy in `Radio.Sink`:
+
+- source data packets and session packets use `fwmark_base`
+- parity packets use `fwmark_base + 1`
+
+Runtime PHY updates still go through the sink:
+
+```elixir
+Membrane.Pipeline.notify_child(pipeline, :radio_sink, {:set_radio_config, %{mcs_index: 5, short_gi: :short}})
+```
+
 ## Radio Smoke Test
 
 `examples/radio_smoke.exs` provides a tiny Membrane pipeline for smoke-testing
@@ -27,8 +87,14 @@ The interface must already be up and in monitor mode. If needed, you can switch
 an interface first from IEx:
 
 ```elixir
+NervesWifibroadcast.Radio.Control.set_region("BO")
 NervesWifibroadcast.set_card_monitor_mode("wlan0")
+NervesWifibroadcast.Radio.Control.set_frequency("wlan0", 5825, 20)
+NervesWifibroadcast.set_card_tx_power("wlan0", :rtl8812au, 30)
 ```
+
+Use `:rtl8812eu` instead of `:rtl8812au` for 8812EU cards. The TX power helper
+follows the `wfb-ng` driver quirk described in `master.cfg`.
 
 The example prints:
 
@@ -179,7 +245,7 @@ fragments begin to flow.
 
 `examples/wfb_reorder_fec_smoke.exs` smoke-tests the next stage of the RX
 pipeline:
-`Radio.Source -> WFB.Decrypt -> WFB.ReorderFec -> per-radio-port sinks`.
+`Radio.Source -> WFB.Decrypt -> WFB.FecDecoder -> per-radio-port sinks`.
 
 Load it in IEx:
 

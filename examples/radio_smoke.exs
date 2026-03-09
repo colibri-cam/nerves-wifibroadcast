@@ -66,6 +66,13 @@ defmodule NervesWifibroadcast.Examples.RadioSmoke do
 
         NervesWifibroadcast.Examples.RadioSmoke.start(interfaces: [\"wlan0mon\"])
 
+    Optional radio setup before capture:
+
+        NervesWifibroadcast.Radio.Control.set_region("BO")
+        NervesWifibroadcast.set_card_monitor_mode("wlan0")
+        NervesWifibroadcast.Radio.Control.set_frequency("wlan0", 5825, 20)
+        NervesWifibroadcast.set_card_tx_power("wlan0", :rtl8812au, 30)
+
     Optional tuning:
 
         NervesWifibroadcast.Examples.RadioSmoke.start(

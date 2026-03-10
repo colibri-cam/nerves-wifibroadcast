@@ -60,7 +60,7 @@ defmodule NervesWifibroadcast.Examples.RadioSmoke do
     """
     Load the example:
 
-        sudo iex -S mix -r examples/radio_smoke.exs
+        iex -S mix -r examples/radio_smoke.exs
 
     Start capture:
 

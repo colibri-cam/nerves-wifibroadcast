@@ -34,6 +34,73 @@ want Linux traffic control to classify TX packets, set `use_qdisc?: true` and a
 
 See `examples/README.md` for a TX pipeline snippet.
 
+## Run Without `sudo`
+
+`NervesWifibroadcast.Radio.Control` uses pure-Elixir rtnetlink and `nl80211`
+calls.
+
+If you want to switch monitor mode, change channel or frequency, set TX power,
+and use raw packet RX/TX without starting the whole VM as root, grant Linux
+file capabilities to the actual Erlang VM executable: `beam.smp`.
+
+What the capabilities do:
+
+- `cap_net_admin` lets the BEAM perform the network-admin operations used here, including link up/down, monitor mode, regulatory changes, channel or frequency changes, TX power changes, and socket options such as `SO_MARK`
+- `cap_net_raw` lets the BEAM open raw and `AF_PACKET` sockets for radio RX/TX
+
+What `setcap` changes:
+
+- `setcap` writes file capabilities onto the `beam.smp` executable itself; it does not modify this project
+- every `iex`, `mix`, release, or Erlang node started from that exact `beam.smp` path gets those capabilities when it starts
+- any code running inside those VMs can use them; the capabilities are not scoped to `nerves-wifibroadcast`
+- if you use the same Erlang installation for unrelated work, those BEAM workloads also get the same network privileges
+- other Erlang installations are unaffected unless you run `setcap` on their `beam.smp` too
+
+For the smallest blast radius, prefer a dedicated Erlang installation or
+runtime for radio work.
+
+Grant the capabilities once per Erlang installation:
+
+### Bash
+
+```bash
+erl_path="$(realpath "$(which erl)")"
+beam_path="$(realpath "$(dirname "$erl_path")"/../erts-*/bin/beam.smp)"
+sudo setcap 'cap_net_admin,cap_net_raw+ep' "$beam_path"
+getcap "$beam_path"
+```
+
+### Zsh
+
+```zsh
+erl_path="$(realpath "$(which erl)")"
+beam_path="$(realpath "$(dirname "$erl_path")"/../erts-*/bin/beam.smp)"
+sudo setcap 'cap_net_admin,cap_net_raw+ep' "$beam_path"
+getcap "$beam_path"
+```
+
+### Fish
+
+```fish
+set erl_path (realpath (which erl))
+set beam_path (realpath (dirname $erl_path)/../erts-*/bin/beam.smp)
+sudo setcap 'cap_net_admin,cap_net_raw+ep' $beam_path
+getcap $beam_path
+```
+
+To remove the capabilities later, rerun the matching `beam_path` snippet above
+and then:
+
+```bash
+sudo setcap -r "$beam_path"
+```
+
+Notes:
+
+- rerun `setcap` after upgrading Erlang/OTP, because a new `beam.smp` binary replaces the old one
+- the capability change applies only to the resolved `beam.smp`; if you have multiple Erlang installs, other installs are unaffected
+- if you do not want to grant capabilities to `beam.smp`, running the examples with `sudo` still works as a fallback
+
 ## Smoke examples
 
 Runnable smoke examples live in `examples/README.md`:

@@ -1,120 +1,36 @@
 defmodule NervesWifibroadcast.Radio.Control do
   @moduledoc """
-  Out-of-band radio interface control through OS tooling.
+  Out-of-band radio interface control through pure-Elixir rtnetlink and nl80211.
+
+  Public functions accept interface names. Low-level netlink options such as
+  `:socket_module`, `:ifindex_resolver`, `:timeout`, and `:recv_size` are kept
+  available for testing and advanced control.
   """
 
-  @type command_runner :: (String.t(), [String.t()], Keyword.t() ->
-                             {:ok, binary()} | {:error, term()})
+  alias NervesWifibroadcast.Radio.Channel
+  alias NervesWifibroadcast.Radio.Netlink.Nl80211
+  alias NervesWifibroadcast.Radio.Netlink.Rtnetlink
+
   @type driver_t :: :rtl8812au | :rtl8812eu
   @type tx_power_spec :: nil | :off | {:dbm, non_neg_integer()} | {:raw, integer()}
 
-  @spec set_region(String.t(), command_runner()) :: :ok | {:error, term()}
-  def set_region(region, command_runner \\ &default_command_runner/3) do
-    region = normalize_region!(region)
-
-    case run_command(command_runner, "iw", ["reg", "set", region]) do
+  @spec set_region(String.t(), Keyword.t()) :: :ok | {:error, term()}
+  def set_region(region, opts \\ []) do
+    case Nl80211.set_region(normalize_region!(region), opts) do
       :ok -> :ok
       {:error, reason} -> {:error, {:set_region_failed, reason}}
     end
   end
 
-  @spec set_monitor_mode(String.t() | [String.t()], command_runner()) :: :ok | {:error, term()}
-  def set_monitor_mode(cards, command_runner \\ &default_command_runner/3) do
+  @spec set_monitor_mode(String.t() | [String.t()], Keyword.t()) :: :ok | {:error, term()}
+  def set_monitor_mode(cards, opts \\ []) do
     cards
     |> normalize_interfaces!()
-    |> apply_monitor_mode(command_runner)
-  end
-
-  @spec set_card_monitor_mode(String.t() | [String.t()], command_runner()) ::
-          :ok | {:error, term()}
-  def set_card_monitor_mode(cards, command_runner \\ &default_command_runner/3) do
-    set_monitor_mode(cards, command_runner)
-  end
-
-  @spec set_link_state(String.t() | [String.t()], boolean(), command_runner()) ::
-          :ok | {:error, term()}
-  def set_link_state(cards, up?, command_runner \\ &default_command_runner/3)
-      when is_boolean(up?) do
-    cards
-    |> normalize_interfaces!()
-    |> apply_link_state(up?, command_runner)
-  end
-
-  @spec set_channel(
-          String.t() | [String.t()],
-          String.t() | pos_integer(),
-          String.t() | pos_integer(),
-          command_runner()
-        ) ::
-          :ok | {:error, term()}
-  def set_channel(cards, channel, width, command_runner \\ &default_command_runner/3) do
-    cards
-    |> normalize_interfaces!()
-    |> apply_channel(channel, normalize_width!(width), command_runner)
-  end
-
-  @spec set_card_channel(
-          String.t() | [String.t()],
-          String.t() | pos_integer(),
-          String.t() | pos_integer(),
-          command_runner()
-        ) ::
-          :ok | {:error, term()}
-  def set_card_channel(cards, channel, width, command_runner \\ &default_command_runner/3) do
-    set_channel(cards, channel, width, command_runner)
-  end
-
-  @spec set_frequency(
-          String.t() | [String.t()],
-          String.t() | pos_integer(),
-          String.t() | pos_integer(),
-          command_runner()
-        ) ::
-          :ok | {:error, term()}
-  def set_frequency(cards, frequency_mhz, width, command_runner \\ &default_command_runner/3) do
-    cards
-    |> normalize_interfaces!()
-    |> apply_frequency(frequency_mhz, normalize_width!(width), command_runner)
-  end
-
-  @spec set_tx_power(String.t() | [String.t()], tx_power_spec(), Keyword.t()) ::
-          :ok | {:error, term()}
-  def set_tx_power(cards, tx_power, opts \\ []) do
-    command_runner = Keyword.get(opts, :command_runner, &default_command_runner/3)
-
-    cards
-    |> normalize_interfaces!()
-    |> apply_tx_power(normalize_tx_power!(tx_power, Keyword.get(opts, :driver)), command_runner)
-  end
-
-  @spec set_card_tx_power(
-          String.t() | [String.t()],
-          driver_t(),
-          non_neg_integer(),
-          command_runner()
-        ) ::
-          :ok | {:error, term()}
-  def set_card_tx_power(cards, driver, dbm, command_runner \\ &default_command_runner/3)
-
-  def set_card_tx_power(cards, driver, dbm, command_runner) when is_integer(dbm) and dbm >= 0 do
-    set_tx_power(cards, {:dbm, dbm}, driver: driver, command_runner: command_runner)
-  end
-
-  @spec default_command_runner(String.t(), [String.t()], Keyword.t()) ::
-          {:ok, binary()} | {:error, term()}
-  def default_command_runner(cmd, args, options \\ []) do
-    case MuonTrap.cmd(cmd, args, options) do
-      {output, 0} -> {:ok, output}
-      {output, status} -> {:error, {:command_failed, cmd, args, status, output}}
-    end
-  end
-
-  defp apply_monitor_mode(interfaces, command_runner) do
-    Enum.reduce_while(interfaces, :ok, fn interface, :ok ->
-      with :ok <- run_command(command_runner, "ip", ["link", "set", interface, "down"]),
-           :ok <-
-             run_command(command_runner, "iw", ["dev", interface, "set", "monitor", "otherbss"]),
-           :ok <- run_command(command_runner, "ip", ["link", "set", interface, "up"]) do
+    |> Enum.reduce_while(:ok, fn interface, :ok ->
+      with {:ok, ifindex} <- resolve_ifindex(interface, opts),
+           :ok <- Rtnetlink.set_link_state(ifindex, false, opts),
+           :ok <- Nl80211.set_monitor_mode(ifindex, opts),
+           :ok <- Rtnetlink.set_link_state(ifindex, true, opts) do
         {:cont, :ok}
       else
         {:error, reason} -> {:halt, {:error, {:monitor_mode_failed, interface, reason}}}
@@ -122,66 +38,142 @@ defmodule NervesWifibroadcast.Radio.Control do
     end)
   end
 
-  defp apply_link_state(interfaces, up?, command_runner) do
+  @spec set_card_monitor_mode(String.t() | [String.t()], Keyword.t()) :: :ok | {:error, term()}
+  def set_card_monitor_mode(cards, opts \\ []) do
+    set_monitor_mode(cards, opts)
+  end
+
+  @spec set_link_state(String.t() | [String.t()], boolean(), Keyword.t()) ::
+          :ok | {:error, term()}
+  def set_link_state(cards, up?, opts \\ []) when is_boolean(up?) do
     target_state = if(up?, do: "up", else: "down")
 
-    Enum.reduce_while(interfaces, :ok, fn interface, :ok ->
-      case run_command(command_runner, "ip", ["link", "set", interface, target_state]) do
-        :ok ->
-          {:cont, :ok}
-
+    cards
+    |> normalize_interfaces!()
+    |> Enum.reduce_while(:ok, fn interface, :ok ->
+      with {:ok, ifindex} <- resolve_ifindex(interface, opts),
+           :ok <- Rtnetlink.set_link_state(ifindex, up?, opts) do
+        {:cont, :ok}
+      else
         {:error, reason} ->
           {:halt, {:error, {:set_link_state_failed, interface, target_state, reason}}}
       end
     end)
   end
 
-  defp apply_channel(interfaces, channel, width, command_runner) do
-    channel = normalize_numeric_arg!(channel, "channel")
+  @spec set_channel(
+          String.t() | [String.t()],
+          String.t() | pos_integer(),
+          String.t() | pos_integer(),
+          Keyword.t()
+        ) ::
+          :ok | {:error, term()}
+  def set_channel(cards, channel, width, opts \\ []) do
+    width = Channel.normalize_width!(width)
+    frequency_mhz = channel |> Channel.normalize_channel!() |> Channel.channel_to_frequency!()
 
-    Enum.reduce_while(interfaces, :ok, fn interface, :ok ->
-      case run_command(command_runner, "iw", ["dev", interface, "set", "channel", channel, width]) do
-        :ok -> {:cont, :ok}
+    cards
+    |> normalize_interfaces!()
+    |> Enum.reduce_while(:ok, fn interface, :ok ->
+      with {:ok, ifindex} <- resolve_ifindex(interface, opts),
+           :ok <-
+             wrap_argument_errors(fn ->
+               Nl80211.set_frequency(ifindex, frequency_mhz, width, opts)
+             end) do
+        {:cont, :ok}
+      else
         {:error, reason} -> {:halt, {:error, {:set_channel_failed, interface, reason}}}
       end
     end)
   end
 
-  defp apply_frequency(interfaces, frequency_mhz, width, command_runner) do
-    frequency_mhz = normalize_numeric_arg!(frequency_mhz, "frequency")
+  @spec set_card_channel(
+          String.t() | [String.t()],
+          String.t() | pos_integer(),
+          String.t() | pos_integer(),
+          Keyword.t()
+        ) ::
+          :ok | {:error, term()}
+  def set_card_channel(cards, channel, width, opts \\ []) do
+    set_channel(cards, channel, width, opts)
+  end
 
-    Enum.reduce_while(interfaces, :ok, fn interface, :ok ->
-      case run_command(command_runner, "iw", [
-             "dev",
-             interface,
-             "set",
-             "freq",
-             frequency_mhz,
-             width
-           ]) do
-        :ok -> {:cont, :ok}
+  @spec set_frequency(
+          String.t() | [String.t()],
+          String.t() | pos_integer(),
+          String.t() | pos_integer(),
+          Keyword.t()
+        ) ::
+          :ok | {:error, term()}
+  def set_frequency(cards, frequency_mhz, width, opts \\ []) do
+    width = Channel.normalize_width!(width)
+    frequency_mhz = Channel.normalize_frequency!(frequency_mhz)
+
+    cards
+    |> normalize_interfaces!()
+    |> Enum.reduce_while(:ok, fn interface, :ok ->
+      with {:ok, ifindex} <- resolve_ifindex(interface, opts),
+           :ok <-
+             wrap_argument_errors(fn ->
+               Nl80211.set_frequency(ifindex, frequency_mhz, width, opts)
+             end) do
+        {:cont, :ok}
+      else
         {:error, reason} -> {:halt, {:error, {:set_frequency_failed, interface, reason}}}
       end
     end)
   end
 
-  defp apply_tx_power(_interfaces, nil, _command_runner), do: :ok
-  defp apply_tx_power(_interfaces, :off, _command_runner), do: :ok
+  @spec set_tx_power(String.t() | [String.t()], tx_power_spec(), Keyword.t()) ::
+          :ok | {:error, term()}
+  def set_tx_power(cards, tx_power, opts \\ []) do
+    cards = normalize_interfaces!(cards)
+    driver = Keyword.get(opts, :driver)
+    tx_power = normalize_tx_power!(tx_power, driver)
+    opts = Keyword.drop(opts, [:driver])
 
-  defp apply_tx_power(interfaces, value, command_runner) do
-    Enum.reduce_while(interfaces, :ok, fn interface, :ok ->
-      case run_command(command_runner, "iw", ["dev", interface, "set", "txpower", "fixed", value]) do
-        :ok -> {:cont, :ok}
-        {:error, reason} -> {:halt, {:error, {:set_tx_power_failed, interface, reason}}}
-      end
-    end)
+    if tx_power in [nil, :off] do
+      :ok
+    else
+      Enum.reduce_while(cards, :ok, fn interface, :ok ->
+        with {:ok, ifindex} <- resolve_ifindex(interface, opts),
+             :ok <- Nl80211.set_tx_power(ifindex, tx_power, opts) do
+          {:cont, :ok}
+        else
+          {:error, reason} -> {:halt, {:error, {:set_tx_power_failed, interface, reason}}}
+        end
+      end)
+    end
   end
 
-  defp run_command(command_runner, cmd, args) do
-    case command_runner.(cmd, args, []) do
-      {:ok, _output} -> :ok
-      {:error, reason} -> {:error, reason}
+  @spec set_card_tx_power(String.t() | [String.t()], driver_t(), non_neg_integer(), Keyword.t()) ::
+          :ok | {:error, term()}
+  def set_card_tx_power(cards, driver, dbm, opts \\ []) when is_integer(dbm) and dbm >= 0 do
+    set_tx_power(cards, {:dbm, dbm}, Keyword.put(opts, :driver, driver))
+  end
+
+  defp resolve_ifindex(interface, opts) do
+    resolver = Keyword.get(opts, :ifindex_resolver, &default_ifindex_resolver/1)
+
+    case resolver.(interface) do
+      {:ok, ifindex} when is_integer(ifindex) and ifindex > 0 -> {:ok, ifindex}
+      ifindex when is_integer(ifindex) and ifindex > 0 -> {:ok, ifindex}
+      {:error, _reason} = error -> error
+      other -> {:error, {:invalid_ifindex, interface, other}}
     end
+  end
+
+  defp default_ifindex_resolver(interface) do
+    case :net.if_name2index(String.to_charlist(interface)) do
+      {:ok, ifindex} -> {:ok, ifindex}
+      {:error, reason} -> {:error, {:if_name2index_failed, interface, reason}}
+    end
+  end
+
+  defp wrap_argument_errors(fun) do
+    fun.()
+  rescue
+    error in ArgumentError -> {:error, {:invalid_argument, Exception.message(error)}}
   end
 
   defp normalize_interfaces!(interface) when is_binary(interface),
@@ -209,52 +201,19 @@ defmodule NervesWifibroadcast.Radio.Control do
     raise ArgumentError, "expected interface to be a non-empty binary, got: #{inspect(interface)}"
   end
 
-  defp normalize_region!(region) when is_binary(region) and byte_size(region) > 0, do: region
+  defp normalize_region!(region) when is_binary(region) and byte_size(region) > 0,
+    do: String.upcase(region)
 
   defp normalize_region!(region) do
     raise ArgumentError, "expected region to be a non-empty binary, got: #{inspect(region)}"
   end
 
-  defp normalize_numeric_arg!(value, _name) when is_integer(value) and value > 0,
-    do: Integer.to_string(value)
-
-  defp normalize_numeric_arg!(value, _name) when is_binary(value) and byte_size(value) > 0,
-    do: value
-
-  defp normalize_numeric_arg!(value, name) do
-    raise ArgumentError,
-          "expected #{name} to be a positive integer or non-empty binary, got: #{inspect(value)}"
-  end
-
-  defp normalize_width!(5), do: "5MHz"
-  defp normalize_width!("5"), do: "5MHz"
-  defp normalize_width!(10), do: "10MHz"
-  defp normalize_width!("10"), do: "10MHz"
-  defp normalize_width!(20), do: "HT20"
-  defp normalize_width!("20"), do: "HT20"
-  defp normalize_width!(40), do: "HT40+"
-  defp normalize_width!("40"), do: "HT40+"
-  defp normalize_width!(80), do: "80MHz"
-  defp normalize_width!("80"), do: "80MHz"
-  defp normalize_width!(160), do: "160MHz"
-  defp normalize_width!("160"), do: "160MHz"
-  defp normalize_width!(width) when is_binary(width) and byte_size(width) > 0, do: width
-
-  defp normalize_width!(width) do
-    raise ArgumentError,
-          "expected width to be one of 5, 10, 20, 40, 80, 160 or a non-empty binary, got: #{inspect(width)}"
-  end
-
   defp normalize_tx_power!(nil, _driver), do: nil
   defp normalize_tx_power!(:off, _driver), do: :off
-
-  defp normalize_tx_power!({:raw, value}, _driver) when is_integer(value),
-    do: Integer.to_string(value)
+  defp normalize_tx_power!({:raw, value}, _driver) when is_integer(value), do: value
 
   defp normalize_tx_power!({:dbm, dbm}, driver) when is_integer(dbm) and dbm >= 0 do
-    dbm
-    |> tx_power_mbm(normalize_driver!(driver))
-    |> Integer.to_string()
+    tx_power_mbm(dbm, normalize_driver!(driver))
   end
 
   defp normalize_tx_power!(tx_power, driver) do

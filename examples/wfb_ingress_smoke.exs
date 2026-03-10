@@ -77,7 +77,7 @@ defmodule NervesWifibroadcast.Examples.WfbIngressSmoke do
     """
     Load the example:
 
-        sudo iex -S mix -r examples/wfb_ingress_smoke.exs
+        iex -S mix -r examples/wfb_ingress_smoke.exs
 
     Start capture:
 

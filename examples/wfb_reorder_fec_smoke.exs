@@ -77,7 +77,7 @@ defmodule NervesWifibroadcast.Examples.WfbReorderFecSmoke do
     """
     Load the example:
 
-        sudo iex -S mix -r examples/wfb_reorder_fec_smoke.exs
+        iex -S mix -r examples/wfb_reorder_fec_smoke.exs
 
     Start capture:
 

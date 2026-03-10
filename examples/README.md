@@ -1,5 +1,9 @@
 # Examples
 
+These examples assume the `beam.smp` capability setup described in `README.md`.
+If you have not granted those capabilities, run the same commands with `sudo`
+instead.
+
 ## TX Pipeline Snippet
 
 There is not a full TX smoke script yet, but the current TX Membrane shape is:
@@ -68,7 +72,7 @@ the pure Elixir radio source on one or more real monitor-mode interfaces.
 Load it in IEx:
 
 ```bash
-sudo iex -S mix -r examples/radio_smoke.exs
+  iex -S mix -r examples/radio_smoke.exs
 ```
 
 Start the pipeline:
@@ -95,6 +99,10 @@ NervesWifibroadcast.set_card_tx_power("wlan0", :rtl8812au, 30)
 
 Use `:rtl8812eu` instead of `:rtl8812au` for 8812EU cards. The TX power helper
 follows the `wfb-ng` driver quirk described in `master.cfg`.
+
+`Radio.Control` is netlink-only now, so monitor mode, channel/frequency, and
+TX power changes work through the BEAM process itself. See `README.md` for the
+`setcap` details if you want to run these examples without `sudo`.
 
 The example prints:
 
@@ -129,7 +137,7 @@ source:
 Load it in IEx:
 
 ```bash
-sudo iex -S mix -r examples/wfb_ingress_smoke.exs
+  iex -S mix -r examples/wfb_ingress_smoke.exs
 ```
 
 Start the pipeline:
@@ -187,7 +195,7 @@ Packets for unknown radio ports or the wrong `link_id` are dropped directly by `
 Load it in IEx:
 
 ```bash
-sudo iex -S mix -r examples/wfb_decrypt_smoke.exs
+  iex -S mix -r examples/wfb_decrypt_smoke.exs
 ```
 
 Start the pipeline:
@@ -250,7 +258,7 @@ pipeline:
 Load it in IEx:
 
 ```bash
-sudo iex -S mix -r examples/wfb_reorder_fec_smoke.exs
+  iex -S mix -r examples/wfb_reorder_fec_smoke.exs
 ```
 
 Start the pipeline:

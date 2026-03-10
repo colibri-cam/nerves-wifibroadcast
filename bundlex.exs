@@ -1,4 +1,4 @@
-defmodule NervesWifibroadcast.BundlexProject do
+defmodule Wifibroadcast.BundlexProject do
   use Bundlex.Project
 
   def project() do
@@ -10,62 +10,69 @@ defmodule NervesWifibroadcast.BundlexProject do
 
   defp natives() do
     [
-      wfb_tx: [
-        sources: ["tx.cpp"],
-        language: :cpp,
-        compiler_flags: ["-std=gnu++11", "-fno-strict-aliasing", "-DWFB_VERSION=\'\"24.8.17.79622-8c81d238\"\'"],
-        linker_flags: ["-lrt", "-lsodium"],
-        deps: [nerves_wifibroadcast: :fec, nerves_wifibroadcast: :wifibroadcast],
-        interface: :port,
+      wfb_crypto: [
+        sources: ["wfb_crypto_nif.c"],
+        language: :c,
+        compiler_flags: [
+          "-std=gnu99",
+          "-fno-strict-aliasing",
+          "-DWFB_VERSION='\"24.8.17.79622-8c81d238\"'"
+        ],
+        linker_flags: ["-lsodium"],
+        interface: :nif
       ],
-      wfb_rx: [
-        sources: ["rx.cpp"],
-        language: :cpp,
-        compiler_flags: ["-std=gnu++11", "-fno-strict-aliasing", "-DWFB_VERSION=\'\"24.8.17.79622-8c81d238\"\'"],
-        linker_flags: ["-lrt", "-lsodium", "-lpcap"],
-        deps: [nerves_wifibroadcast: :radiotap, nerves_wifibroadcast: :fec, nerves_wifibroadcast: :wifibroadcast],
-        interface: :port,
-      ],
-      wfb_keygen: [
-        sources: ["keygen.c"],
-        language: :cpp,
-        compiler_flags: ["-std=gnu99", "-fno-strict-aliasing", "-DWFB_VERSION=\'\"24.8.17.79622-8c81d238\"\'"],
-        linker_flags: ["-lrt", "-lsodium", ""],
-        interface: :port,
-      ],
-      wfb_tx_cmd: [
-        sources: ["tx_cmd.c"],
-        language: :cpp,
-        compiler_flags: ["-std=gnu99", "-fno-strict-aliasing", "-DWFB_VERSION=\'\"24.8.17.79622-8c81d238\"\'"],
-        linker_flags: ["-lrt", "-lsodium", ""],
-        interface: :port,
+      wfb_fec: [
+        sources: ["wfb_fec_nif.c"],
+        language: :c,
+        compiler_flags: [
+          "-std=gnu99",
+          "-fno-strict-aliasing",
+          "-DWFB_VERSION='\"24.8.17.79622-8c81d238\"'"
+        ],
+        deps: [wifibroadcast: :zfex],
+        interface: :nif
       ]
     ]
   end
 
   defp libs() do
     [
-      fec: [
-        sources: ["fec.c"],
+      zfex: [
+        sources: ["zfex.c"],
         language: :c,
-        compiler_flags: ["-std=gnu99", "-fno-strict-aliasing", "-DWFB_VERSION=\'\"24.8.17.79622-8c81d238\"\'"],
-        linker_flags: ["-lrt", "-lsodium"],
-        interface: nil,
-      ],
-      radiotap: [
-        sources: ["radiotap.c"],
-        language: :c,
-        compiler_flags: ["-std=gnu99", "-fno-strict-aliasing", "-DWFB_VERSION=\'\"24.8.17.79622-8c81d238\"\'"],
-        linker_flags: ["-lrt", "-lsodium"],
-        interface: nil,
-      ],
-      wifibroadcast: [
-        sources: ["wifibroadcast.cpp"],
-        language: :cpp,
-        compiler_flags: ["-std=gnu++11", "-fno-strict-aliasing", "-DWFB_VERSION=\'\"24.8.17.79622-8c81d238\"\'"],
-        linker_flags: ["-lrt", "-lsodium"],
-        interface: nil,
+        compiler_flags: zfex_compiler_flags(),
+        linker_flags: [],
+        interface: nil
       ]
     ]
+  end
+
+  defp zfex_compiler_flags do
+    [
+      "-std=gnu99",
+      "-fno-strict-aliasing",
+      "-DZFEX_UNROLL_ADDMUL_SIMD=8",
+      "-DZFEX_INLINE_ADDMUL",
+      "-DZFEX_INLINE_ADDMUL_SIMD",
+      "-DWFB_VERSION='\"24.8.17.79622-8c81d238\"'"
+    ] ++ zfex_simd_flags()
+  end
+
+  defp zfex_simd_flags do
+    arch = Bundlex.get_target().architecture
+
+    cond do
+      arch in ["x86_64", "i386", "i686"] ->
+        ["-DZFEX_USE_INTEL_SSSE3", "-mssse3"]
+
+      arch in ["aarch64", "arm64"] ->
+        ["-DZFEX_USE_ARM_NEON"]
+
+      String.starts_with?(arch, "arm") ->
+        ["-DZFEX_USE_ARM_NEON", "-mfpu=neon"]
+
+      true ->
+        []
+    end
   end
 end

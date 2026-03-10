@@ -147,65 +147,6 @@ Wifibroadcast.Examples.RadioSmoke.start(
 
 You usually need root or `CAP_NET_RAW` for `AF_PACKET` capture.
 
-## WFB Ingress Smoke Test
-
-`examples/wfb_ingress_smoke.exs` smoke-tests WFB-specific routing directly in the
-source:
-`Radio.Source -> per-radio-port sinks`.
-
-Load it in IEx:
-
-```bash
-  iex -S mix -r examples/wfb_ingress_smoke.exs
-```
-
-Start the pipeline:
-
-```elixir
-Wifibroadcast.Examples.WfbIngressSmoke.start(
-  interfaces: ["wlan0mon"],
-  radio_port: 4
-)
-```
-
-Enable only a subset of the already linked radio ports at runtime:
-
-```elixir
-Wifibroadcast.Examples.WfbIngressSmoke.set_radio_ports([4])
-```
-
-Stop it:
-
-```elixir
-Wifibroadcast.Examples.WfbIngressSmoke.stop()
-```
-
-The example prints:
-
-- ingress child notifications from the pipeline
-- first packet previews per configured `radio_port`
-- periodic summaries per radio port with packet type counts
-- parsed WFB metadata like `block_idx`, `fragment_idx`, and session nonce preview
-- selected radiotap metadata for the last packet seen on that radio port
-
-Useful options:
-
-```elixir
-Wifibroadcast.Examples.WfbIngressSmoke.start(
-  interfaces: ["wlan0mon"],
-  link_id: 0x7505d6,
-  radio_ports: [4, 5],
-  frame_buffer_size: 8192,
-  max_read_burst: 64,
-  max_queue_size: 512,
-  print_first: 10,
-  summary_every_ms: 1_000,
-  max_preview_bytes: 48
-)
-```
-
-Packets for unknown radio ports or the wrong `link_id` are dropped directly by `Wifibroadcast.Membrane.Radio.Source`.
-
 ## WFB Decrypt Smoke Test
 
 `examples/wfb_decrypt_smoke.exs` smoke-tests the decrypt stage of the pipeline:

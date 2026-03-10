@@ -11,7 +11,6 @@ mode hardware:
 
 - `Wifibroadcast.Membrane.Radio.Source` captures monitor-mode traffic in pure Elixir via `AF_PACKET`, applies WFB ingress filtering, and routes packets by `link_id` and `radio_port`
 - `Wifibroadcast.Radiotap.Parser` decodes radiotap metadata into `buffer.metadata`
-- `Wifibroadcast.Membrane.WFB.Ingress` remains available as a compatibility filter/router for pre-routed 802.11 frames
 - `Wifibroadcast.Membrane.WFB.Decrypt` decrypts WFB session/data packet payloads while preserving the packet contract
 - `Wifibroadcast.Membrane.WFB.FecDecoder` is the preferred RX FEC stage name; it accepts session/data packets, performs FEC recovery, and emits ordered source shards
 
@@ -130,7 +129,6 @@ Notes:
 Runnable smoke examples live in `examples/README.md`:
 
 - `examples/radio_smoke.exs`
-- `examples/wfb_ingress_smoke.exs`
 - `examples/wfb_decrypt_smoke.exs`
 - `examples/wfb_reorder_fec_smoke.exs`
 

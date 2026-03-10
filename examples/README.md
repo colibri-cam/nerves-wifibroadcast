@@ -4,6 +4,25 @@ These examples assume the `beam.smp` capability setup described in `README.md`.
 If you have not granted those capabilities, run the same commands with `sudo`
 instead.
 
+## Generate Keys
+
+The encrypted examples expect `drone.key` for TX and `gs.key` for RX. Generate
+them from IEx:
+
+```bash
+iex -S mix
+```
+
+```elixir
+NervesWifibroadcast.generate_wfb_keys()
+```
+
+If you want password-derived keys that match `wfb-ng`, pass the shared password:
+
+```elixir
+NervesWifibroadcast.generate_wfb_keys("shared-password")
+```
+
 ## TX Pipeline Snippet
 
 There is not a full TX smoke script yet, but the current TX Membrane shape is:

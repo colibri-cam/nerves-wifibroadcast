@@ -34,6 +34,30 @@ want Linux traffic control to classify TX packets, set `use_qdisc?: true` and a
 
 See `examples/README.md` for a TX pipeline snippet.
 
+## WFB Keys
+
+`NervesWifibroadcast.generate_wfb_keys/1` writes the standard `drone.key` and
+`gs.key` files in the current working directory.
+
+Generate random keys:
+
+```bash
+iex -S mix
+```
+
+```elixir
+NervesWifibroadcast.generate_wfb_keys()
+```
+
+Generate password-derived keys that stay compatible with `wfb-ng`:
+
+```elixir
+NervesWifibroadcast.generate_wfb_keys("shared-password")
+```
+
+The resulting files use the same layout expected by the `Encrypt` and `Decrypt`
+stages.
+
 ## Run Without `sudo`
 
 `NervesWifibroadcast.Radio.Control` uses pure-Elixir rtnetlink and `nl80211`

@@ -50,6 +50,7 @@ defmodule NervesWifibroadcast.Radio.ControlTest do
   use ExUnit.Case, async: false
 
   alias NervesWifibroadcast.Radio.Control
+  alias NervesWifibroadcast.Radio.Netlink.Nl80211
   alias NervesWifibroadcast.Radio.Netlink.Attr
   alias NervesWifibroadcast.Radio.Netlink.Header
 
@@ -197,6 +198,64 @@ defmodule NervesWifibroadcast.Radio.ControlTest do
     end)
 
     assert :ok = Control.set_channel("wlan0", 149, 20, netlink_opts())
+  end
+
+  test "get_iftype resolves nl80211 family and decodes monitor mode" do
+    Process.put(:fake_netlink_handler, fn {:fake_netlink_socket, protocol, _ref}, payload ->
+      [message] = Header.decode_messages(payload)
+
+      case {protocol, message.type} do
+        {16, 16} ->
+          [family_reply_and_ack(message.seq, @nl80211_family_id)]
+
+        {16, @nl80211_family_id} ->
+          %{cmd: 5, attrs: attrs_binary} = Header.decode_genlmsg(message.payload)
+          attrs = Attr.decode(attrs_binary)
+          assert {:ok, 7} = Attr.get_u32(attrs, 3)
+
+          [
+            Header.nlmsg(
+              @nl80211_family_id,
+              0,
+              message.seq,
+              0,
+              Header.genlmsg(7, 1, [Attr.u32(3, 7), Attr.u32(5, 6)])
+            ) <> ack(message.seq)
+          ]
+      end
+    end)
+
+    assert {:ok, :monitor} =
+             Nl80211.get_iftype(7,
+               socket_module: NervesWifibroadcast.TestSupport.FakeNetlinkSocket
+             )
+  end
+
+  test "get_iftype preserves unknown nl80211 interface types" do
+    Process.put(:fake_netlink_handler, fn {:fake_netlink_socket, protocol, _ref}, payload ->
+      [message] = Header.decode_messages(payload)
+
+      case {protocol, message.type} do
+        {16, 16} ->
+          [family_reply_and_ack(message.seq, @nl80211_family_id)]
+
+        {16, @nl80211_family_id} ->
+          [
+            Header.nlmsg(
+              @nl80211_family_id,
+              0,
+              message.seq,
+              0,
+              Header.genlmsg(7, 1, [Attr.u32(3, 7), Attr.u32(5, 42)])
+            ) <> ack(message.seq)
+          ]
+      end
+    end)
+
+    assert {:ok, {:unknown, 42}} =
+             Nl80211.get_iftype(7,
+               socket_module: NervesWifibroadcast.TestSupport.FakeNetlinkSocket
+             )
   end
 
   test "set_frequency includes center frequency for 80 MHz" do

@@ -1,5 +1,10 @@
 defmodule Wifibroadcast.WFB.Keys do
-  @moduledoc false
+  @moduledoc """
+  Helpers for generating, writing, and loading WFB key files.
+
+  `drone.key` stores the TX secret key followed by the peer public key.
+  `gs.key` stores the RX secret key followed by the peer public key.
+  """
 
   alias Wifibroadcast.WFB.CryptoNif
 
@@ -8,8 +13,15 @@ defmodule Wifibroadcast.WFB.Keys do
   @publickey_bytes 32
   @secretkey_bytes 32
 
+  @type generated_t :: %{
+          drone_publickey: binary(),
+          drone_secretkey: binary(),
+          gs_publickey: binary(),
+          gs_secretkey: binary()
+        }
+
   @type t :: %__MODULE__{
-          box_key: CryptoNif.box_key(),
+          box_key: reference(),
           rx_secretkey: binary(),
           tx_publickey: binary()
         }
@@ -18,8 +30,6 @@ defmodule Wifibroadcast.WFB.Keys do
           rx_publickey: binary(),
           tx_secretkey: binary()
         }
-
-  @type generated_t :: CryptoNif.key_material()
 
   defstruct [:box_key, :rx_secretkey, :tx_publickey]
 

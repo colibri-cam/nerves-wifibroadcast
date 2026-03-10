@@ -1,23 +1,51 @@
 # Wifibroadcast
 
-Elixir-first work on the `wifibroadcast` RX/TX stack for Nerves, with the RX
-pipeline being rebuilt as Membrane elements and native code kept focused on the
-hot crypto and FEC paths.
+`wifibroadcast` is a Linux/Nerves-only Elixir package for building WFB RX/TX
+pipelines with Membrane, pure-Elixir radio control, and `AF_PACKET` radio
+transport. Native code is kept focused on the hot crypto and FEC paths.
 
-## Current RX pipeline work
+This package targets real monitor-mode WiFi hardware on Linux and Nerves. It is
+not intended for macOS or Windows.
 
-The RX side is being implemented incrementally and smoke-tested on real monitor
-mode hardware:
+## Installation
+
+Add `wifibroadcast` to your dependencies:
+
+```elixir
+defp deps do
+  [
+    {:wifibroadcast, "~> 0.1.0"}
+  ]
+end
+```
+
+## Requirements
+
+- Linux / Nerves only
+- `libsodium` development headers and library available at build time
+- `cap_net_admin` and `cap_net_raw` on `beam.smp`, or `sudo`, for raw radio control and `AF_PACKET` RX/TX
+
+On Debian or Ubuntu systems, install the native crypto dependency with:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y libsodium-dev
+```
+
+## RX Pipeline
+
+The RX side is built from Membrane elements and runs on real monitor-mode
+hardware:
 
 - `Wifibroadcast.Membrane.Radio.Source` captures monitor-mode traffic in pure Elixir via `AF_PACKET`, applies WFB ingress filtering, and routes packets by `link_id` and `radio_port`
 - `Wifibroadcast.Radiotap.Parser` decodes radiotap metadata into `buffer.metadata`
 - `Wifibroadcast.Membrane.WFB.Decrypt` decrypts WFB session/data packet payloads while preserving the packet contract
 - `Wifibroadcast.Membrane.WFB.FecDecoder` is the preferred RX FEC stage name; it accepts session/data packets, performs FEC recovery, and emits ordered source shards
 
-## Current TX pipeline work
+## TX Pipeline
 
-The TX side now has the matching Membrane stages needed to build a working WFB
-transmit path:
+The TX side has the matching Membrane stages needed to build a WFB transmit
+path:
 
 - `Wifibroadcast.Membrane.WFB.PayloadWrap` wraps packetized payloads into `wpacket_hdr_t <> payload`
 - `Wifibroadcast.Membrane.WFB.FecEncoder` groups wrapped payloads into source/parity shards and emits session/data packets
@@ -132,5 +160,4 @@ Runnable smoke examples live in `examples/README.md`:
 - `examples/wfb_decrypt_smoke.exs`
 - `examples/wfb_reorder_fec_smoke.exs`
 
-These are intended for step-by-step validation on real hardware while the RX
-pipeline is being built out.
+These are intended for step-by-step validation on real Linux / Nerves hardware.

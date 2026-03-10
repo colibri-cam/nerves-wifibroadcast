@@ -1,5 +1,8 @@
 # Examples
 
+These examples target Linux / Nerves systems with real monitor-mode WiFi
+hardware.
+
 These examples assume the `beam.smp` capability setup described in `README.md`.
 If you have not granted those capabilities, run the same commands with `sudo`
 instead.

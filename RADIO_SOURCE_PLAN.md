@@ -4,7 +4,8 @@
 
 Build a pure Elixir Membrane source element that captures monitor-mode radio packets over `AF_PACKET`, parses radiotap headers, and exposes parsed radiotap data in buffer metadata.
 
-This is intentionally not a replica of `c_src/nerves_wifibroadcast/rx.cpp`.
+This is intentionally a native-free Membrane source rather than a port of the
+old native RX binary.
 
 ## First Milestone
 

@@ -3,8 +3,7 @@ defmodule NervesWifibroadcast.Membrane.WFB.PayloadUnwrap do
   Extracts packet payloads from ordered WFB source shards.
 
   The input payload is expected to be `wpacket_hdr_t <> payload`. The emitted
-  buffers contain only the unwrapped packet payload, matching what `rx.cpp`
-  forwards over UDP.
+  buffers contain only the unwrapped packet payload from the ordered WFB shard.
   """
 
   use Membrane.Filter

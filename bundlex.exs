@@ -10,63 +10,13 @@ defmodule NervesWifibroadcast.BundlexProject do
 
   defp natives() do
     [
-      wfb_tx: [
-        sources: ["tx.cpp"],
-        language: :cpp,
-        compiler_flags: [
-          "-std=gnu++11",
-          "-fno-strict-aliasing",
-          "-DWFB_VERSION=\'\"24.8.17.79622-8c81d238\"\'"
-        ],
-        linker_flags: ["-lrt", "-lsodium"],
-        deps: [nerves_wifibroadcast: :zfex, nerves_wifibroadcast: :wifibroadcast],
-        interface: :port
-      ],
-      wfb_rx: [
-        sources: ["rx.cpp"],
-        language: :cpp,
-        compiler_flags: [
-          "-std=gnu++11",
-          "-fno-strict-aliasing",
-          "-DWFB_VERSION=\'\"24.8.17.79622-8c81d238\"\'"
-        ],
-        linker_flags: ["-lrt", "-lsodium", "-lpcap"],
-        deps: [
-          nerves_wifibroadcast: :radiotap,
-          nerves_wifibroadcast: :zfex,
-          nerves_wifibroadcast: :wifibroadcast
-        ],
-        interface: :port
-      ],
-      wfb_keygen: [
-        sources: ["keygen.c"],
-        language: :c,
-        compiler_flags: [
-          "-std=gnu99",
-          "-fno-strict-aliasing",
-          "-DWFB_VERSION=\'\"24.8.17.79622-8c81d238\"\'"
-        ],
-        linker_flags: ["-lrt", "-lsodium", ""],
-        interface: :port
-      ],
-      wfb_tx_cmd: [
-        sources: ["tx_cmd.c"],
-        language: :c,
-        compiler_flags: [
-          "-std=gnu99",
-          "-fno-strict-aliasing",
-          "-DWFB_VERSION=\'\"24.8.17.79622-8c81d238\"\'"
-        ],
-        linker_flags: ["-lrt", "-lsodium", ""],
-        interface: :port
-      ],
       wfb_crypto: [
         sources: ["wfb_crypto_nif.c"],
         language: :c,
         compiler_flags: [
           "-std=gnu99",
           "-fno-strict-aliasing",
-          "-DWFB_VERSION=\'\"24.8.17.79622-8c81d238\"\'"
+          "-DWFB_VERSION='\"24.8.17.79622-8c81d238\"'"
         ],
         linker_flags: ["-lsodium"],
         interface: :nif
@@ -77,7 +27,7 @@ defmodule NervesWifibroadcast.BundlexProject do
         compiler_flags: [
           "-std=gnu99",
           "-fno-strict-aliasing",
-          "-DWFB_VERSION=\'\"24.8.17.79622-8c81d238\"\'"
+          "-DWFB_VERSION='\"24.8.17.79622-8c81d238\"'"
         ],
         deps: [nerves_wifibroadcast: :zfex],
         interface: :nif
@@ -93,28 +43,6 @@ defmodule NervesWifibroadcast.BundlexProject do
         compiler_flags: zfex_compiler_flags(),
         linker_flags: [],
         interface: nil
-      ],
-      radiotap: [
-        sources: ["radiotap.c"],
-        language: :c,
-        compiler_flags: [
-          "-std=gnu99",
-          "-fno-strict-aliasing",
-          "-DWFB_VERSION=\'\"24.8.17.79622-8c81d238\"\'"
-        ],
-        linker_flags: ["-lrt", "-lsodium"],
-        interface: nil
-      ],
-      wifibroadcast: [
-        sources: ["wifibroadcast.cpp"],
-        language: :cpp,
-        compiler_flags: [
-          "-std=gnu++11",
-          "-fno-strict-aliasing",
-          "-DWFB_VERSION=\'\"24.8.17.79622-8c81d238\"\'"
-        ],
-        linker_flags: ["-lrt", "-lsodium"],
-        interface: nil
       ]
     ]
   end
@@ -126,7 +54,7 @@ defmodule NervesWifibroadcast.BundlexProject do
       "-DZFEX_UNROLL_ADDMUL_SIMD=8",
       "-DZFEX_INLINE_ADDMUL",
       "-DZFEX_INLINE_ADDMUL_SIMD",
-      "-DWFB_VERSION=\'\"24.8.17.79622-8c81d238\"\'"
+      "-DWFB_VERSION='\"24.8.17.79622-8c81d238\"'"
     ] ++ zfex_simd_flags()
   end
 

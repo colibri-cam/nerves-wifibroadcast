@@ -13,6 +13,7 @@ defmodule NervesWifibroadcast.Membrane.WFB.Encrypt do
   alias Membrane.Buffer
   alias NervesWifibroadcast.Membrane.WFB.StreamFormat
   alias NervesWifibroadcast.WFB.CryptoNif
+  alias NervesWifibroadcast.WFB.Keys
   alias NervesWifibroadcast.WFB.Session
 
   @max_block_idx (1 <<< 55) - 1
@@ -267,16 +268,7 @@ defmodule NervesWifibroadcast.Membrane.WFB.Encrypt do
 
   defp load_keys!(%{rx_publickey: nil, tx_secretkey: nil, key_path: key_path})
        when is_binary(key_path) do
-    case File.read(key_path) do
-      {:ok, <<tx_secretkey::binary-size(32), rx_publickey::binary-size(32)>>} ->
-        %{rx_publickey: rx_publickey, tx_secretkey: tx_secretkey}
-
-      {:ok, _other} ->
-        raise ArgumentError, "unable to load tx key file #{inspect(key_path)}: :invalid_key_file"
-
-      {:error, reason} ->
-        raise ArgumentError, "unable to load tx key file #{inspect(key_path)}: #{inspect(reason)}"
-    end
+    Keys.load_tx!(key_path)
   end
 
   defp load_keys!(%{rx_publickey: rx_publickey, tx_secretkey: tx_secretkey})

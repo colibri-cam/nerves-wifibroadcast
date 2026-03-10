@@ -21,11 +21,72 @@ typedef struct {
 } box_key_resource_t;
 
 static ErlNifResourceType *box_key_resource_type = NULL;
+static ERL_NIF_TERM atom_drone_publickey;
+static ERL_NIF_TERM atom_drone_secretkey;
 static ERL_NIF_TERM atom_error;
+static ERL_NIF_TERM atom_gs_publickey;
+static ERL_NIF_TERM atom_gs_secretkey;
 static ERL_NIF_TERM atom_ok;
+
+static const unsigned char keygen_salt[crypto_pwhash_argon2i_SALTBYTES] =
+    {'w', 'i', 'f', 'i', 'b', 'r', 'o', 'a', 'd', 'c', 'a', 's', 't', 'k', 'e', 'y'};
 
 static int inspect_binary(ErlNifEnv *env, ERL_NIF_TERM term, ErlNifBinary *binary) {
     return enif_inspect_binary(env, term, binary);
+}
+
+static int put_binary(ErlNifEnv *env,
+                      ERL_NIF_TERM map,
+                      ERL_NIF_TERM key,
+                      const unsigned char *value,
+                      size_t size,
+                      ERL_NIF_TERM *result) {
+    ERL_NIF_TERM binary_term;
+    unsigned char *binary = enif_make_new_binary(env, size, &binary_term);
+
+    if (binary == NULL) {
+        return 0;
+    }
+
+    memcpy(binary, value, size);
+    return enif_make_map_put(env, map, key, binary_term, result);
+}
+
+static ERL_NIF_TERM make_key_material_term(ErlNifEnv *env,
+                                           const unsigned char *drone_publickey,
+                                           const unsigned char *drone_secretkey,
+                                           const unsigned char *gs_publickey,
+                                           const unsigned char *gs_secretkey) {
+    ERL_NIF_TERM map = enif_make_new_map(env);
+
+    if (!put_binary(env,
+                    map,
+                    atom_drone_publickey,
+                    drone_publickey,
+                    crypto_box_PUBLICKEYBYTES,
+                    &map) ||
+        !put_binary(env,
+                    map,
+                    atom_drone_secretkey,
+                    drone_secretkey,
+                    crypto_box_SECRETKEYBYTES,
+                    &map) ||
+        !put_binary(env,
+                    map,
+                    atom_gs_publickey,
+                    gs_publickey,
+                    crypto_box_PUBLICKEYBYTES,
+                    &map) ||
+        !put_binary(env,
+                    map,
+                    atom_gs_secretkey,
+                    gs_secretkey,
+                    crypto_box_SECRETKEYBYTES,
+                    &map)) {
+        return atom_error;
+    }
+
+    return enif_make_tuple2(env, atom_ok, map);
 }
 
 static ERL_NIF_TERM box_beforenm_nif(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[]) {
@@ -60,6 +121,73 @@ static ERL_NIF_TERM box_beforenm_nif(ErlNifEnv *env, int argc, const ERL_NIF_TER
     enif_release_resource(resource);
 
     return resource_term;
+}
+
+static ERL_NIF_TERM generate_keypairs_nif(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[]) {
+    unsigned char drone_publickey[crypto_box_PUBLICKEYBYTES];
+    unsigned char drone_secretkey[crypto_box_SECRETKEYBYTES];
+    unsigned char gs_publickey[crypto_box_PUBLICKEYBYTES];
+    unsigned char gs_secretkey[crypto_box_SECRETKEYBYTES];
+
+    if (argc != 0) {
+        return enif_make_badarg(env);
+    }
+
+    (void)argv;
+
+    if (crypto_box_keypair(drone_publickey, drone_secretkey) != 0 ||
+        crypto_box_keypair(gs_publickey, gs_secretkey) != 0) {
+        return atom_error;
+    }
+
+    return make_key_material_term(env,
+                                  drone_publickey,
+                                  drone_secretkey,
+                                  gs_publickey,
+                                  gs_secretkey);
+}
+
+static ERL_NIF_TERM derive_keypairs_nif(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[]) {
+    ErlNifBinary password;
+    unsigned char seed[crypto_box_SEEDBYTES * 2];
+    unsigned char drone_publickey[crypto_box_PUBLICKEYBYTES];
+    unsigned char drone_secretkey[crypto_box_SECRETKEYBYTES];
+    unsigned char gs_publickey[crypto_box_PUBLICKEYBYTES];
+    unsigned char gs_secretkey[crypto_box_SECRETKEYBYTES];
+
+    if (argc != 1) {
+        return enif_make_badarg(env);
+    }
+
+    if (!inspect_binary(env, argv[0], &password)) {
+        return enif_make_badarg(env);
+    }
+
+    if (crypto_pwhash_argon2i(seed,
+                              sizeof(seed),
+                              (const char *)password.data,
+                              (unsigned long long)password.size,
+                              keygen_salt,
+                              crypto_pwhash_argon2i_OPSLIMIT_INTERACTIVE,
+                              crypto_pwhash_argon2i_MEMLIMIT_INTERACTIVE,
+                              crypto_pwhash_ALG_ARGON2I13) != 0) {
+        sodium_memzero(seed, sizeof(seed));
+        return atom_error;
+    }
+
+    if (crypto_box_seed_keypair(drone_publickey, drone_secretkey, seed) != 0 ||
+        crypto_box_seed_keypair(gs_publickey, gs_secretkey, seed + crypto_box_SEEDBYTES) != 0) {
+        sodium_memzero(seed, sizeof(seed));
+        return atom_error;
+    }
+
+    sodium_memzero(seed, sizeof(seed));
+
+    return make_key_material_term(env,
+                                  drone_publickey,
+                                  drone_secretkey,
+                                  gs_publickey,
+                                  gs_secretkey);
 }
 
 static ERL_NIF_TERM open_session_nif(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[]) {
@@ -279,6 +407,10 @@ static int load(ErlNifEnv *env, void **priv_data, ERL_NIF_TERM load_info) {
 
     atom_ok = enif_make_atom(env, "ok");
     atom_error = enif_make_atom(env, "error");
+    atom_drone_publickey = enif_make_atom(env, "drone_publickey");
+    atom_drone_secretkey = enif_make_atom(env, "drone_secretkey");
+    atom_gs_publickey = enif_make_atom(env, "gs_publickey");
+    atom_gs_secretkey = enif_make_atom(env, "gs_secretkey");
 
     box_key_resource_type = enif_open_resource_type(env,
                                                     NULL,
@@ -296,6 +428,8 @@ static int load(ErlNifEnv *env, void **priv_data, ERL_NIF_TERM load_info) {
 
 static ErlNifFunc nif_funcs[] = {
     {"box_beforenm", 2, box_beforenm_nif, 0},
+    {"generate_keypairs", 0, generate_keypairs_nif, 0},
+    {"derive_keypairs", 1, derive_keypairs_nif, 0},
     {"open_session", 2, open_session_nif, 0},
     {"open_data", 2, open_data_nif, 0},
     {"seal_session", 4, seal_session_nif, 0},

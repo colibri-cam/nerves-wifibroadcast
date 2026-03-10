@@ -1,10 +1,9 @@
 defmodule NervesWifibroadcast do
-  require Bundlex.Port
-
   alias NervesWifibroadcast.Radio.Control
+  alias NervesWifibroadcast.WFB.Keys
 
   @moduledoc """
-  Documentation for `NervesWfbNg`.
+  Top-level helpers for radio control and WFB key generation.
   """
 
   @doc """
@@ -31,67 +30,21 @@ defmodule NervesWifibroadcast do
   end
 
   @doc """
-  Generates pair of keys(drone.key, gs.key) using wfb_keygen to be
-  used on drone and groundstation side.
+  Generates `drone.key` and `gs.key` in the current directory.
+
+  When a password is provided, the output matches the password-derived
+  `wfb-ng` key generation flow.
   """
-  def generate_wfb_keys, do: mt_cmd(bundlex_path(:wfb_keygen))
+  @spec generate_wfb_keys(nil | binary()) ::
+          {:ok, %{drone_path: String.t(), gs_path: String.t(), keys: Keys.generated_t()}}
+          | {:error, term()}
+  def generate_wfb_keys(password \\ nil)
 
-  @doc """
-  Starts wfb_tx and creates StringIO device where output is stored
-  """
-  def start_wfb_tx(card, opts \\ []) do
-    defaults = [port: 5001, radio_id: 0, key: "drone.key", mcs_i: 0, bandwidth: 20]
-
-    args =
-      defaults |> Keyword.merge(opts) |> Enum.flat_map(&prepare_args(&1)) |> Enum.concat([card])
-
-    cmd_path = bundlex_path(:wfb_tx)
-    {:ok, log_device_pid} = StringIO.open("")
-    log_io_stream = IO.stream(log_device_pid, :line)
-
-    pid = spawn(fn -> mt_cmd(cmd_path, args, into: log_io_stream) end)
-
-    {pid, log_device_pid}
+  def generate_wfb_keys(nil) do
+    Keys.generate_files()
   end
 
-  @doc """
-  Starts wfb_rx and creates StringIO device where output is stored
-  """
-  def start_wfb_rx(card, opts \\ [])
-  def start_wfb_rx(card, opts) when is_binary(card), do: start_wfb_rx([card], opts)
-
-  def start_wfb_rx(cards, opts) do
-    defaults = [port: 5001, radio_id: 0, key: "gs.key", link_id: 7_669_206]
-
-    args =
-      defaults |> Keyword.merge(opts) |> Enum.flat_map(&prepare_args(&1)) |> Enum.concat(cards)
-
-    cmd_path = bundlex_path(:wfb_rx)
-    {:ok, log_device_pid} = StringIO.open("")
-    log_io_stream = IO.stream(log_device_pid, :line)
-
-    pid = spawn(fn -> mt_cmd(cmd_path, args, into: log_io_stream) end)
-
-    {pid, log_device_pid}
-  end
-
-  defp prepare_args({:port, port}), do: ["-u", to_string(port)]
-  defp prepare_args({:key, key}), do: ["-K", key]
-  defp prepare_args({:radio_id, radio_id}), do: ["-p", to_string(radio_id)]
-  defp prepare_args({:link_id, link_id}), do: ["-i", to_string(link_id)]
-  defp prepare_args({:mcs_i, mcs_i}), do: ["-M", to_string(mcs_i)]
-  defp prepare_args({:bandwidth, bandwidth}), do: ["-B", to_string(bandwidth)]
-
-  defp bundlex_path(native_name) do
-    app = Application.get_application(__MODULE__)
-
-    Bundlex.build_path(app, native_name, :port)
-  end
-
-  defp mt_cmd(cmd, args \\ [], options \\ []) do
-    case MuonTrap.cmd(cmd, args, options) do
-      {output, 0} -> {:ok, output}
-      {output, err_code} -> {:error, "Error code: #{err_code} \n #{inspect(output)}"}
-    end
+  def generate_wfb_keys(password) when is_binary(password) do
+    Keys.generate_files(password: password)
   end
 end

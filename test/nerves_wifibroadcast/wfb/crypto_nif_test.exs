@@ -39,4 +39,36 @@ defmodule NervesWifibroadcast.WFB.CryptoNifTest do
     assert loaded_keys.tx_publickey == keys.tx_publickey
     assert is_reference(loaded_keys.box_key)
   end
+
+  test "derive_keypairs matches wfb-ng password key output" do
+    expected_drone =
+      Base.decode16!(
+        "342e402edacd9483292ae0ad82ad1dfb1913e33708e240a6d8d897bb436d3f991bcd67b6abd46a8652cd2cfab5609617eb51706509fc8237c2dc2441c12cc721",
+        case: :mixed
+      )
+
+    expected_gs =
+      Base.decode16!(
+        "ef48e9077f58c040e43696a98365f141d832f4266119ea643274d036167c5712da391167f46bbf818c733dc01657170763920c451ed577a6b54b05bf4ecb5a6c",
+        case: :mixed
+      )
+
+    assert {:ok, key_material} = CryptoNif.derive_keypairs("compat-password")
+
+    assert Keys.drone_key_file_content(key_material) == expected_drone
+    assert Keys.gs_key_file_content(key_material) == expected_gs
+  end
+
+  test "generate_keypairs returns loadable drone and gs key files" do
+    assert {:ok, key_material} = CryptoNif.generate_keypairs()
+
+    assert {:ok, tx_keys} = Keys.from_tx_key_file(Keys.drone_key_file_content(key_material))
+    assert tx_keys.tx_secretkey == key_material.drone_secretkey
+    assert tx_keys.rx_publickey == key_material.gs_publickey
+
+    assert {:ok, rx_keys} = Keys.from_rx_key_file(Keys.gs_key_file_content(key_material))
+    assert rx_keys.rx_secretkey == key_material.gs_secretkey
+    assert rx_keys.tx_publickey == key_material.drone_publickey
+    assert is_reference(rx_keys.box_key)
+  end
 end

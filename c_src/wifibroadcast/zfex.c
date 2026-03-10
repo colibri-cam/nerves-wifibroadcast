@@ -789,9 +789,11 @@ zfex_status_code_t fec_encode_simd(
     gf * ZFEX_RESTRICT const * ZFEX_RESTRICT const fecs,
     size_t const sz)
 {
+    size_t const data_count = (size_t)code->k;
+    size_t const parity_count = (size_t)code->n - data_count;
 
     /* Verify input blocks addresses */
-    for (size_t ix = 0; ix < code->k; ++ix)
+    for (size_t ix = 0; ix < data_count; ++ix)
     {
         if (((uintptr_t)inpkts[ix] % ZFEX_SIMD_ALIGNMENT) != 0)
         {
@@ -800,7 +802,7 @@ zfex_status_code_t fec_encode_simd(
     }
 
     /* Verify output blocks addresses */
-    for (size_t ix = 0; ix < (code->n - code->k); ++ix)
+    for (size_t ix = 0; ix < parity_count; ++ix)
     {
         if (((uintptr_t)fecs[ix] % ZFEX_SIMD_ALIGNMENT) != 0)
         {
@@ -812,14 +814,14 @@ zfex_status_code_t fec_encode_simd(
     {
         size_t const stride = ((sz - k) < ZFEX_STRIDE) ? (sz - k) : ZFEX_STRIDE;
 
-        for (unsigned int i = 0; i < (code->n - code->k); ++i)
+        for (size_t i = 0; i < parity_count; ++i)
         {
-            unsigned int fecnum = i + code->k;
+            size_t const fecnum = i + data_count;
             memset(fecs[i] + k, 0, stride);
 
-            gf const *p = &(code->enc_matrix[fecnum * code->k]);
+            gf const *p = &(code->enc_matrix[fecnum * data_count]);
 
-            for (unsigned int j = 0; j < code->k; ++j)
+            for (size_t j = 0; j < data_count; ++j)
             {
                 addmul_simd(fecs[i] + k, inpkts[j] + k, p[j], stride);
             }

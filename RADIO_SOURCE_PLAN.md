@@ -9,7 +9,7 @@ old native RX binary.
 
 ## First Milestone
 
-Create `NervesWifibroadcast.Membrane.Radio.Source` as a Membrane `Source` that:
+Create `Wifibroadcast.Membrane.Radio.Source` as a Membrane `Source` that:
 
 - owns the Linux `AF_PACKET` socket itself
 - receives raw monitor-mode packets in pure Elixir
@@ -22,7 +22,7 @@ The first version should not be WFB-specific.
 
 ## Element Shape
 
-### `NervesWifibroadcast.Membrane.Radio.Source`
+### `Wifibroadcast.Membrane.Radio.Source`
 
 Responsibilities:
 
@@ -33,7 +33,7 @@ Responsibilities:
 - queue and emit `Membrane.Buffer`s according to downstream demand
 - drop malformed radiotap packets without crashing
 
-### `NervesWifibroadcast.Radio.AFPacket`
+### `Wifibroadcast.Radio.AFPacket`
 
 Pure helper module, not a process.
 
@@ -44,7 +44,7 @@ Responsibilities:
 - apply socket options needed by the source
 - close socket
 
-### `NervesWifibroadcast.Radiotap.Parser`
+### `Wifibroadcast.Radiotap.Parser`
 
 Pure Elixir parser.
 
@@ -217,8 +217,8 @@ These tests should be tagged so they do not run by default.
 
 Recommended implementation order:
 
-1. `NervesWifibroadcast.Radiotap.Parser`
-2. `NervesWifibroadcast.Radio.AFPacket`
-3. `NervesWifibroadcast.Membrane.Radio.Source`
+1. `Wifibroadcast.Radiotap.Parser`
+2. `Wifibroadcast.Radio.AFPacket`
+3. `Wifibroadcast.Membrane.Radio.Source`
 4. `Radio.Source -> Testing.Sink` smoke pipeline
 5. WFB-specific downstream filters later

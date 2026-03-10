@@ -1,4 +1,4 @@
-# NervesWfbNg
+# Wifibroadcast
 
 Elixir-first work on the `wifibroadcast` RX/TX stack for Nerves, with the RX
 pipeline being rebuilt as Membrane elements and native code kept focused on the
@@ -9,21 +9,21 @@ hot crypto and FEC paths.
 The RX side is being implemented incrementally and smoke-tested on real monitor
 mode hardware:
 
-- `NervesWifibroadcast.Membrane.Radio.Source` captures monitor-mode traffic in pure Elixir via `AF_PACKET`, applies WFB ingress filtering, and routes packets by `link_id` and `radio_port`
-- `NervesWifibroadcast.Radiotap.Parser` decodes radiotap metadata into `buffer.metadata`
-- `NervesWifibroadcast.Membrane.WFB.Ingress` remains available as a compatibility filter/router for pre-routed 802.11 frames
-- `NervesWifibroadcast.Membrane.WFB.Decrypt` decrypts WFB session/data packet payloads while preserving the packet contract
-- `NervesWifibroadcast.Membrane.WFB.FecDecoder` is the preferred RX FEC stage name; it accepts session/data packets, performs FEC recovery, and emits ordered source shards
+- `Wifibroadcast.Membrane.Radio.Source` captures monitor-mode traffic in pure Elixir via `AF_PACKET`, applies WFB ingress filtering, and routes packets by `link_id` and `radio_port`
+- `Wifibroadcast.Radiotap.Parser` decodes radiotap metadata into `buffer.metadata`
+- `Wifibroadcast.Membrane.WFB.Ingress` remains available as a compatibility filter/router for pre-routed 802.11 frames
+- `Wifibroadcast.Membrane.WFB.Decrypt` decrypts WFB session/data packet payloads while preserving the packet contract
+- `Wifibroadcast.Membrane.WFB.FecDecoder` is the preferred RX FEC stage name; it accepts session/data packets, performs FEC recovery, and emits ordered source shards
 
 ## Current TX pipeline work
 
 The TX side now has the matching Membrane stages needed to build a working WFB
 transmit path:
 
-- `NervesWifibroadcast.Membrane.WFB.PayloadWrap` wraps packetized payloads into `wpacket_hdr_t <> payload`
-- `NervesWifibroadcast.Membrane.WFB.FecEncoder` groups wrapped payloads into source/parity shards and emits session/data packets
-- `NervesWifibroadcast.Membrane.WFB.Encrypt` optionally encrypts the session/data packet payloads without changing the packet contract
-- `NervesWifibroadcast.Membrane.Radio.Sink` fans in multiple `radio_port` branches, adds radiotap + 802.11 + outer WFB headers, and injects frames through `AF_PACKET`
+- `Wifibroadcast.Membrane.WFB.PayloadWrap` wraps packetized payloads into `wpacket_hdr_t <> payload`
+- `Wifibroadcast.Membrane.WFB.FecEncoder` groups wrapped payloads into source/parity shards and emits session/data packets
+- `Wifibroadcast.Membrane.WFB.Encrypt` optionally encrypts the session/data packet payloads without changing the packet contract
+- `Wifibroadcast.Membrane.Radio.Sink` fans in multiple `radio_port` branches, adds radiotap + 802.11 + outer WFB headers, and injects frames through `AF_PACKET`
 
 `Radio.Sink` defaults to low-latency injection with qdisc bypass enabled. If you
 want Linux traffic control to classify TX packets, set `use_qdisc?: true` and a
@@ -36,7 +36,7 @@ See `examples/README.md` for a TX pipeline snippet.
 
 ## WFB Keys
 
-`NervesWifibroadcast.generate_wfb_keys/1` writes the standard `drone.key` and
+`Wifibroadcast.generate_wfb_keys/1` writes the standard `drone.key` and
 `gs.key` files in the current working directory.
 
 Generate random keys:
@@ -46,13 +46,13 @@ iex -S mix
 ```
 
 ```elixir
-NervesWifibroadcast.generate_wfb_keys()
+Wifibroadcast.generate_wfb_keys()
 ```
 
 Generate password-derived keys that stay compatible with `wfb-ng`:
 
 ```elixir
-NervesWifibroadcast.generate_wfb_keys("shared-password")
+Wifibroadcast.generate_wfb_keys("shared-password")
 ```
 
 The resulting files use the same layout expected by the `Encrypt` and `Decrypt`
@@ -60,7 +60,7 @@ stages.
 
 ## Run Without `sudo`
 
-`NervesWifibroadcast.Radio.Control` uses pure-Elixir rtnetlink and `nl80211`
+`Wifibroadcast.Radio.Control` uses pure-Elixir rtnetlink and `nl80211`
 calls.
 
 If you want to switch monitor mode, change channel or frequency, set TX power,
@@ -76,7 +76,7 @@ What `setcap` changes:
 
 - `setcap` writes file capabilities onto the `beam.smp` executable itself; it does not modify this project
 - every `iex`, `mix`, release, or Erlang node started from that exact `beam.smp` path gets those capabilities when it starts
-- any code running inside those VMs can use them; the capabilities are not scoped to `nerves-wifibroadcast`
+- any code running inside those VMs can use them; the capabilities are not scoped to `wifibroadcast`
 - if you use the same Erlang installation for unrelated work, those BEAM workloads also get the same network privileges
 - other Erlang installations are unaffected unless you run `setcap` on their `beam.smp` too
 

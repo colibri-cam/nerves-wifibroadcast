@@ -1,4 +1,4 @@
-defmodule NervesWifibroadcast.Examples.WfbReorderFecSmoke do
+defmodule Wifibroadcast.Examples.WfbReorderFecSmoke do
   @moduledoc """
   IEx-friendly smoke test for the WFB reorder/FEC stage.
 
@@ -8,7 +8,7 @@ defmodule NervesWifibroadcast.Examples.WfbReorderFecSmoke do
 
   Then start the pipeline with:
 
-      NervesWifibroadcast.Examples.WfbReorderFecSmoke.start(
+      Wifibroadcast.Examples.WfbReorderFecSmoke.start(
         interfaces: ["wlan0mon"],
         radio_port: 4
       )
@@ -16,7 +16,7 @@ defmodule NervesWifibroadcast.Examples.WfbReorderFecSmoke do
 
   import Bitwise
 
-  alias NervesWifibroadcast.Examples.WfbReorderFecSmoke.Pipeline
+  alias Wifibroadcast.Examples.WfbReorderFecSmoke.Pipeline
 
   @pipeline_name Pipeline
 
@@ -81,14 +81,14 @@ defmodule NervesWifibroadcast.Examples.WfbReorderFecSmoke do
 
     Start capture:
 
-        NervesWifibroadcast.Examples.WfbReorderFecSmoke.start(
+        Wifibroadcast.Examples.WfbReorderFecSmoke.start(
           interfaces: [\"wlan0mon\"],
           radio_port: 4
         )
 
     Start capture for multiple linked radio ports:
 
-        NervesWifibroadcast.Examples.WfbReorderFecSmoke.start(
+        Wifibroadcast.Examples.WfbReorderFecSmoke.start(
           interfaces: [\"wlan0mon\"],
           link_id: 0x7505d6,
           radio_ports: [4, 5],
@@ -102,11 +102,11 @@ defmodule NervesWifibroadcast.Examples.WfbReorderFecSmoke do
 
     Update enabled radio ports among the already linked outputs:
 
-        NervesWifibroadcast.Examples.WfbReorderFecSmoke.set_radio_ports([4])
+        Wifibroadcast.Examples.WfbReorderFecSmoke.set_radio_ports([4])
 
     Stop capture:
 
-        NervesWifibroadcast.Examples.WfbReorderFecSmoke.stop()
+        Wifibroadcast.Examples.WfbReorderFecSmoke.stop()
     """
   end
 
@@ -253,9 +253,7 @@ defmodule NervesWifibroadcast.Examples.WfbReorderFecSmoke do
       "[wfb_reorder_fec_smoke] waiting for a valid session announcement before ordered source shards appear"
     )
 
-    IO.puts(
-      "[wfb_reorder_fec_smoke] stop with NervesWifibroadcast.Examples.WfbReorderFecSmoke.stop()"
-    )
+    IO.puts("[wfb_reorder_fec_smoke] stop with Wifibroadcast.Examples.WfbReorderFecSmoke.stop()")
   end
 
   defp format_channel_id(channel_id) do
@@ -271,15 +269,15 @@ defmodule NervesWifibroadcast.Examples.WfbReorderFecSmoke do
   end
 end
 
-defmodule NervesWifibroadcast.Examples.WfbReorderFecSmoke.Pipeline do
+defmodule Wifibroadcast.Examples.WfbReorderFecSmoke.Pipeline do
   use Membrane.Pipeline
 
   require Membrane.Pad
 
-  alias NervesWifibroadcast.Examples.WfbReorderFecSmoke.ChannelSink
-  alias NervesWifibroadcast.Membrane.Radio.Source
-  alias NervesWifibroadcast.Membrane.WFB.Decrypt
-  alias NervesWifibroadcast.Membrane.WFB.ReorderFec
+  alias Wifibroadcast.Examples.WfbReorderFecSmoke.ChannelSink
+  alias Wifibroadcast.Membrane.Radio.Source
+  alias Wifibroadcast.Membrane.WFB.Decrypt
+  alias Wifibroadcast.Membrane.WFB.ReorderFec
 
   def start_link(opts) do
     Membrane.Pipeline.start_link(__MODULE__, opts, name: __MODULE__)
@@ -351,14 +349,14 @@ defmodule NervesWifibroadcast.Examples.WfbReorderFecSmoke.Pipeline do
   end
 end
 
-defmodule NervesWifibroadcast.Examples.WfbReorderFecSmoke.ChannelSink do
+defmodule Wifibroadcast.Examples.WfbReorderFecSmoke.ChannelSink do
   use Membrane.Sink
 
   import Bitwise
 
   alias Membrane.Time
-  alias NervesWifibroadcast.Membrane.WFB.OrderedShardStreamFormat
-  alias NervesWifibroadcast.Radiotap
+  alias Wifibroadcast.Membrane.WFB.OrderedShardStreamFormat
+  alias Wifibroadcast.Radiotap
 
   @fec_only_flag 0x01
 
@@ -695,4 +693,4 @@ defmodule NervesWifibroadcast.Examples.WfbReorderFecSmoke.ChannelSink do
   end
 end
 
-IO.puts(NervesWifibroadcast.Examples.WfbReorderFecSmoke.usage())
+IO.puts(Wifibroadcast.Examples.WfbReorderFecSmoke.usage())

@@ -1,14 +1,14 @@
-defmodule NervesWifibroadcast.TestSupport.WFBFixtures do
+defmodule Wifibroadcast.TestSupport.WFBFixtures do
   import Bitwise
 
   alias Membrane.Buffer
   alias Membrane.RemoteStream
-  alias NervesWifibroadcast.Membrane.WFB.DecryptedStreamFormat
-  alias NervesWifibroadcast.Membrane.WFB.OrderedShardStreamFormat
-  alias NervesWifibroadcast.Membrane.WFB.StreamFormat
-  alias NervesWifibroadcast.Membrane.WFB.WrappedPayloadStreamFormat
-  alias NervesWifibroadcast.WFB.CryptoNif
-  alias NervesWifibroadcast.WFB.FecNif
+  alias Wifibroadcast.Membrane.WFB.DecryptedStreamFormat
+  alias Wifibroadcast.Membrane.WFB.OrderedShardStreamFormat
+  alias Wifibroadcast.Membrane.WFB.StreamFormat
+  alias Wifibroadcast.Membrane.WFB.WrappedPayloadStreamFormat
+  alias Wifibroadcast.WFB.CryptoNif
+  alias Wifibroadcast.WFB.FecNif
 
   @default_link_id 7_669_206
   @default_radio_port 4
@@ -229,7 +229,7 @@ defmodule NervesWifibroadcast.TestSupport.WFBFixtures do
       },
       wfb_session:
         struct(
-          NervesWifibroadcast.WFB.Session,
+          Wifibroadcast.WFB.Session,
           Map.take(session, [:channel_id, :epoch, :fec_k, :fec_n, :fec_type, :session_key, :tags])
         )
     }
@@ -260,7 +260,7 @@ defmodule NervesWifibroadcast.TestSupport.WFBFixtures do
       },
       wfb_session:
         struct(
-          NervesWifibroadcast.WFB.Session,
+          Wifibroadcast.WFB.Session,
           Map.take(session, [:channel_id, :epoch, :fec_k, :fec_n, :fec_type, :session_key, :tags])
         )
     }

@@ -1,4 +1,4 @@
-defmodule NervesWifibroadcast.BundlexProject do
+defmodule Wifibroadcast.BundlexProject do
   use Bundlex.Project
 
   def project() do
@@ -29,7 +29,7 @@ defmodule NervesWifibroadcast.BundlexProject do
           "-fno-strict-aliasing",
           "-DWFB_VERSION='\"24.8.17.79622-8c81d238\"'"
         ],
-        deps: [nerves_wifibroadcast: :zfex],
+        deps: [wifibroadcast: :zfex],
         interface: :nif
       ]
     ]

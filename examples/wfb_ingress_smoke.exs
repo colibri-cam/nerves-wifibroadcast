@@ -1,4 +1,4 @@
-defmodule NervesWifibroadcast.Examples.WfbIngressSmoke do
+defmodule Wifibroadcast.Examples.WfbIngressSmoke do
   @moduledoc """
   IEx-friendly smoke test for the WFB ingress/router element.
 
@@ -8,13 +8,13 @@ defmodule NervesWifibroadcast.Examples.WfbIngressSmoke do
 
   Then start the pipeline with:
 
-      NervesWifibroadcast.Examples.WfbIngressSmoke.start(
+      Wifibroadcast.Examples.WfbIngressSmoke.start(
         interfaces: ["wlan0mon"],
         radio_port: 4
       )
   """
 
-  alias NervesWifibroadcast.Examples.WfbIngressSmoke.Pipeline
+  alias Wifibroadcast.Examples.WfbIngressSmoke.Pipeline
 
   import Bitwise
 
@@ -81,14 +81,14 @@ defmodule NervesWifibroadcast.Examples.WfbIngressSmoke do
 
     Start capture:
 
-        NervesWifibroadcast.Examples.WfbIngressSmoke.start(
+        Wifibroadcast.Examples.WfbIngressSmoke.start(
           interfaces: [\"wlan0mon\"],
           radio_port: 4
         )
 
     Start capture for multiple linked radio ports:
 
-        NervesWifibroadcast.Examples.WfbIngressSmoke.start(
+        Wifibroadcast.Examples.WfbIngressSmoke.start(
           interfaces: [\"wlan0mon\"],
           link_id: 0x7505d6,
           radio_ports: [4, 5],
@@ -99,11 +99,11 @@ defmodule NervesWifibroadcast.Examples.WfbIngressSmoke do
 
     Update enabled radio ports among the already linked outputs:
 
-        NervesWifibroadcast.Examples.WfbIngressSmoke.set_radio_ports([4])
+        Wifibroadcast.Examples.WfbIngressSmoke.set_radio_ports([4])
 
     Stop capture:
 
-        NervesWifibroadcast.Examples.WfbIngressSmoke.stop()
+        Wifibroadcast.Examples.WfbIngressSmoke.stop()
     """
   end
 
@@ -221,7 +221,7 @@ defmodule NervesWifibroadcast.Examples.WfbIngressSmoke do
     IO.puts("[wfb_ingress_smoke] link_id=#{format_link_id(link_id)}")
     IO.puts("[wfb_ingress_smoke] radio_ports=[#{radio_ports}]")
     IO.puts("[wfb_ingress_smoke] channel_ids=[#{channel_ids}]")
-    IO.puts("[wfb_ingress_smoke] stop with NervesWifibroadcast.Examples.WfbIngressSmoke.stop()")
+    IO.puts("[wfb_ingress_smoke] stop with Wifibroadcast.Examples.WfbIngressSmoke.stop()")
   end
 
   defp format_channel_id(channel_id) do
@@ -237,13 +237,13 @@ defmodule NervesWifibroadcast.Examples.WfbIngressSmoke do
   end
 end
 
-defmodule NervesWifibroadcast.Examples.WfbIngressSmoke.Pipeline do
+defmodule Wifibroadcast.Examples.WfbIngressSmoke.Pipeline do
   use Membrane.Pipeline
 
   require Membrane.Pad
 
-  alias NervesWifibroadcast.Examples.WfbIngressSmoke.ChannelSink
-  alias NervesWifibroadcast.Membrane.Radio.Source
+  alias Wifibroadcast.Examples.WfbIngressSmoke.ChannelSink
+  alias Wifibroadcast.Membrane.Radio.Source
 
   def start_link(opts) do
     Membrane.Pipeline.start_link(__MODULE__, opts, name: __MODULE__)
@@ -312,14 +312,14 @@ defmodule NervesWifibroadcast.Examples.WfbIngressSmoke.Pipeline do
   end
 end
 
-defmodule NervesWifibroadcast.Examples.WfbIngressSmoke.ChannelSink do
+defmodule Wifibroadcast.Examples.WfbIngressSmoke.ChannelSink do
   use Membrane.Sink
 
   import Bitwise
 
   alias Membrane.Time
-  alias NervesWifibroadcast.Membrane.WFB.StreamFormat
-  alias NervesWifibroadcast.Radiotap
+  alias Wifibroadcast.Membrane.WFB.StreamFormat
+  alias Wifibroadcast.Radiotap
 
   def_options(
     link_id: [spec: non_neg_integer(), default: 7_669_206],
@@ -581,4 +581,4 @@ defmodule NervesWifibroadcast.Examples.WfbIngressSmoke.ChannelSink do
   end
 end
 
-IO.puts(NervesWifibroadcast.Examples.WfbIngressSmoke.usage())
+IO.puts(Wifibroadcast.Examples.WfbIngressSmoke.usage())

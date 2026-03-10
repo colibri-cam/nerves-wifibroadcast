@@ -1,4 +1,4 @@
-defmodule NervesWifibroadcast.Examples.WfbDecryptSmoke do
+defmodule Wifibroadcast.Examples.WfbDecryptSmoke do
   @moduledoc """
   IEx-friendly smoke test for the WFB decrypt stage.
 
@@ -8,7 +8,7 @@ defmodule NervesWifibroadcast.Examples.WfbDecryptSmoke do
 
   Then start the pipeline with:
 
-      NervesWifibroadcast.Examples.WfbDecryptSmoke.start(
+      Wifibroadcast.Examples.WfbDecryptSmoke.start(
         interfaces: ["wlan0mon"],
         radio_port: 4
       )
@@ -16,7 +16,7 @@ defmodule NervesWifibroadcast.Examples.WfbDecryptSmoke do
 
   import Bitwise
 
-  alias NervesWifibroadcast.Examples.WfbDecryptSmoke.Pipeline
+  alias Wifibroadcast.Examples.WfbDecryptSmoke.Pipeline
 
   @pipeline_name Pipeline
 
@@ -81,14 +81,14 @@ defmodule NervesWifibroadcast.Examples.WfbDecryptSmoke do
 
     Start capture:
 
-        NervesWifibroadcast.Examples.WfbDecryptSmoke.start(
+        Wifibroadcast.Examples.WfbDecryptSmoke.start(
           interfaces: [\"wlan0mon\"],
           radio_port: 4
         )
 
     Start capture for multiple linked radio ports:
 
-        NervesWifibroadcast.Examples.WfbDecryptSmoke.start(
+        Wifibroadcast.Examples.WfbDecryptSmoke.start(
           interfaces: [\"wlan0mon\"],
           link_id: 0x7505d6,
           radio_ports: [4, 5],
@@ -101,11 +101,11 @@ defmodule NervesWifibroadcast.Examples.WfbDecryptSmoke do
 
     Update enabled radio ports among the already linked outputs:
 
-        NervesWifibroadcast.Examples.WfbDecryptSmoke.set_radio_ports([4])
+        Wifibroadcast.Examples.WfbDecryptSmoke.set_radio_ports([4])
 
     Stop capture:
 
-        NervesWifibroadcast.Examples.WfbDecryptSmoke.stop()
+        Wifibroadcast.Examples.WfbDecryptSmoke.stop()
     """
   end
 
@@ -243,7 +243,7 @@ defmodule NervesWifibroadcast.Examples.WfbDecryptSmoke do
       "[wfb_decrypt_smoke] waiting for a valid session announcement before decrypted fragments appear"
     )
 
-    IO.puts("[wfb_decrypt_smoke] stop with NervesWifibroadcast.Examples.WfbDecryptSmoke.stop()")
+    IO.puts("[wfb_decrypt_smoke] stop with Wifibroadcast.Examples.WfbDecryptSmoke.stop()")
   end
 
   defp format_channel_id(channel_id) do
@@ -259,14 +259,14 @@ defmodule NervesWifibroadcast.Examples.WfbDecryptSmoke do
   end
 end
 
-defmodule NervesWifibroadcast.Examples.WfbDecryptSmoke.Pipeline do
+defmodule Wifibroadcast.Examples.WfbDecryptSmoke.Pipeline do
   use Membrane.Pipeline
 
   require Membrane.Pad
 
-  alias NervesWifibroadcast.Examples.WfbDecryptSmoke.ChannelSink
-  alias NervesWifibroadcast.Membrane.Radio.Source
-  alias NervesWifibroadcast.Membrane.WFB.Decrypt
+  alias Wifibroadcast.Examples.WfbDecryptSmoke.ChannelSink
+  alias Wifibroadcast.Membrane.Radio.Source
+  alias Wifibroadcast.Membrane.WFB.Decrypt
 
   def start_link(opts) do
     Membrane.Pipeline.start_link(__MODULE__, opts, name: __MODULE__)
@@ -336,15 +336,15 @@ defmodule NervesWifibroadcast.Examples.WfbDecryptSmoke.Pipeline do
   end
 end
 
-defmodule NervesWifibroadcast.Examples.WfbDecryptSmoke.ChannelSink do
+defmodule Wifibroadcast.Examples.WfbDecryptSmoke.ChannelSink do
   use Membrane.Sink
 
   import Bitwise
 
   alias Membrane.Time
-  alias NervesWifibroadcast.Membrane.WFB.StreamFormat
-  alias NervesWifibroadcast.Radiotap
-  alias NervesWifibroadcast.WFB.Session
+  alias Wifibroadcast.Membrane.WFB.StreamFormat
+  alias Wifibroadcast.Radiotap
+  alias Wifibroadcast.WFB.Session
 
   @fec_only_flag 0x01
 
@@ -699,4 +699,4 @@ defmodule NervesWifibroadcast.Examples.WfbDecryptSmoke.ChannelSink do
   end
 end
 
-IO.puts(NervesWifibroadcast.Examples.WfbDecryptSmoke.usage())
+IO.puts(Wifibroadcast.Examples.WfbDecryptSmoke.usage())

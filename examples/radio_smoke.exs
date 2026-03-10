@@ -1,4 +1,4 @@
-defmodule NervesWifibroadcast.Examples.RadioSmoke do
+defmodule Wifibroadcast.Examples.RadioSmoke do
   @moduledoc """
   Minimal IEx-friendly smoke test for the pure Elixir radio source.
 
@@ -8,10 +8,10 @@ defmodule NervesWifibroadcast.Examples.RadioSmoke do
 
   Then start the pipeline with:
 
-      NervesWifibroadcast.Examples.RadioSmoke.start(interfaces: ["wlan0mon"])
+      Wifibroadcast.Examples.RadioSmoke.start(interfaces: ["wlan0mon"])
   """
 
-  alias NervesWifibroadcast.Examples.RadioSmoke.Pipeline
+  alias Wifibroadcast.Examples.RadioSmoke.Pipeline
 
   @pipeline_name Pipeline
 
@@ -64,18 +64,18 @@ defmodule NervesWifibroadcast.Examples.RadioSmoke do
 
     Start capture:
 
-        NervesWifibroadcast.Examples.RadioSmoke.start(interfaces: [\"wlan0mon\"])
+        Wifibroadcast.Examples.RadioSmoke.start(interfaces: [\"wlan0mon\"])
 
     Optional radio setup before capture:
 
-        NervesWifibroadcast.Radio.Control.set_region("BO")
-        NervesWifibroadcast.set_card_monitor_mode("wlan0")
-        NervesWifibroadcast.Radio.Control.set_frequency("wlan0", 5825, 20)
-        NervesWifibroadcast.set_card_tx_power("wlan0", :rtl8812au, 30)
+        Wifibroadcast.Radio.Control.set_region("BO")
+        Wifibroadcast.set_card_monitor_mode("wlan0")
+        Wifibroadcast.Radio.Control.set_frequency("wlan0", 5825, 20)
+        Wifibroadcast.set_card_tx_power("wlan0", :rtl8812au, 30)
 
     Optional tuning:
 
-        NervesWifibroadcast.Examples.RadioSmoke.start(
+        Wifibroadcast.Examples.RadioSmoke.start(
           interfaces: [\"wlan0mon\"],
           frame_buffer_size: 8192,
           max_read_burst: 64,
@@ -87,7 +87,7 @@ defmodule NervesWifibroadcast.Examples.RadioSmoke do
 
     Stop capture:
 
-        NervesWifibroadcast.Examples.RadioSmoke.stop()
+        Wifibroadcast.Examples.RadioSmoke.stop()
     """
   end
 
@@ -109,17 +109,17 @@ defmodule NervesWifibroadcast.Examples.RadioSmoke do
     IO.puts("[radio_smoke] started")
     IO.puts("[radio_smoke] interfaces=#{Enum.join(Keyword.fetch!(opts, :interfaces), ",")}")
     IO.puts("[radio_smoke] radio_port=#{Keyword.fetch!(opts, :radio_port)}")
-    IO.puts("[radio_smoke] stop with NervesWifibroadcast.Examples.RadioSmoke.stop()")
+    IO.puts("[radio_smoke] stop with Wifibroadcast.Examples.RadioSmoke.stop()")
   end
 end
 
-defmodule NervesWifibroadcast.Examples.RadioSmoke.Pipeline do
+defmodule Wifibroadcast.Examples.RadioSmoke.Pipeline do
   use Membrane.Pipeline
 
   require Membrane.Pad
 
-  alias NervesWifibroadcast.Examples.RadioSmoke.Sink
-  alias NervesWifibroadcast.Membrane.Radio.Source
+  alias Wifibroadcast.Examples.RadioSmoke.Sink
+  alias Wifibroadcast.Membrane.Radio.Source
 
   def start_link(opts) do
     Membrane.Pipeline.start_link(__MODULE__, opts, name: __MODULE__)
@@ -163,12 +163,12 @@ defmodule NervesWifibroadcast.Examples.RadioSmoke.Pipeline do
   end
 end
 
-defmodule NervesWifibroadcast.Examples.RadioSmoke.Sink do
+defmodule Wifibroadcast.Examples.RadioSmoke.Sink do
   use Membrane.Sink
 
   alias Membrane.Time
-  alias NervesWifibroadcast.Membrane.WFB.StreamFormat
-  alias NervesWifibroadcast.Radiotap
+  alias Wifibroadcast.Membrane.WFB.StreamFormat
+  alias Wifibroadcast.Radiotap
 
   def_options(
     print_first: [spec: non_neg_integer(), default: 10],
@@ -462,4 +462,4 @@ defmodule NervesWifibroadcast.Examples.RadioSmoke.Sink do
   end
 end
 
-IO.puts(NervesWifibroadcast.Examples.RadioSmoke.usage())
+IO.puts(Wifibroadcast.Examples.RadioSmoke.usage())

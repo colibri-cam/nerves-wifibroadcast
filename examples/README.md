@@ -14,13 +14,13 @@ iex -S mix
 ```
 
 ```elixir
-NervesWifibroadcast.generate_wfb_keys()
+Wifibroadcast.generate_wfb_keys()
 ```
 
 If you want password-derived keys that match `wfb-ng`, pass the shared password:
 
 ```elixir
-NervesWifibroadcast.generate_wfb_keys("shared-password")
+Wifibroadcast.generate_wfb_keys("shared-password")
 ```
 
 ## TX Pipeline Snippet
@@ -29,10 +29,10 @@ There is not a full TX smoke script yet, but the current TX Membrane shape is:
 
 ```elixir
 alias Membrane.Pad
-alias NervesWifibroadcast.Membrane.Radio.Sink
-alias NervesWifibroadcast.Membrane.WFB.Encrypt
-alias NervesWifibroadcast.Membrane.WFB.FecEncoder
-alias NervesWifibroadcast.Membrane.WFB.PayloadWrap
+alias Wifibroadcast.Membrane.Radio.Sink
+alias Wifibroadcast.Membrane.WFB.Encrypt
+alias Wifibroadcast.Membrane.WFB.FecEncoder
+alias Wifibroadcast.Membrane.WFB.PayloadWrap
 
 children = [
   payload_wrap_4: %PayloadWrap{link_id: 0x7505D6, radio_port: 4},
@@ -97,23 +97,23 @@ Load it in IEx:
 Start the pipeline:
 
 ```elixir
-NervesWifibroadcast.Examples.RadioSmoke.start(interfaces: ["wlan0mon"])
+Wifibroadcast.Examples.RadioSmoke.start(interfaces: ["wlan0mon"])
 ```
 
 Stop it:
 
 ```elixir
-NervesWifibroadcast.Examples.RadioSmoke.stop()
+Wifibroadcast.Examples.RadioSmoke.stop()
 ```
 
 The interface must already be up and in monitor mode. If needed, you can switch
 an interface first from IEx:
 
 ```elixir
-NervesWifibroadcast.Radio.Control.set_region("BO")
-NervesWifibroadcast.set_card_monitor_mode("wlan0")
-NervesWifibroadcast.Radio.Control.set_frequency("wlan0", 5825, 20)
-NervesWifibroadcast.set_card_tx_power("wlan0", :rtl8812au, 30)
+Wifibroadcast.Radio.Control.set_region("BO")
+Wifibroadcast.set_card_monitor_mode("wlan0")
+Wifibroadcast.Radio.Control.set_frequency("wlan0", 5825, 20)
+Wifibroadcast.set_card_tx_power("wlan0", :rtl8812au, 30)
 ```
 
 Use `:rtl8812eu` instead of `:rtl8812au` for 8812EU cards. The TX power helper
@@ -134,7 +134,7 @@ The example prints:
 Useful options:
 
 ```elixir
-NervesWifibroadcast.Examples.RadioSmoke.start(
+Wifibroadcast.Examples.RadioSmoke.start(
   interfaces: ["wlan0mon"],
   frame_buffer_size: 8192,
   max_read_burst: 64,
@@ -162,7 +162,7 @@ Load it in IEx:
 Start the pipeline:
 
 ```elixir
-NervesWifibroadcast.Examples.WfbIngressSmoke.start(
+Wifibroadcast.Examples.WfbIngressSmoke.start(
   interfaces: ["wlan0mon"],
   radio_port: 4
 )
@@ -171,13 +171,13 @@ NervesWifibroadcast.Examples.WfbIngressSmoke.start(
 Enable only a subset of the already linked radio ports at runtime:
 
 ```elixir
-NervesWifibroadcast.Examples.WfbIngressSmoke.set_radio_ports([4])
+Wifibroadcast.Examples.WfbIngressSmoke.set_radio_ports([4])
 ```
 
 Stop it:
 
 ```elixir
-NervesWifibroadcast.Examples.WfbIngressSmoke.stop()
+Wifibroadcast.Examples.WfbIngressSmoke.stop()
 ```
 
 The example prints:
@@ -191,7 +191,7 @@ The example prints:
 Useful options:
 
 ```elixir
-NervesWifibroadcast.Examples.WfbIngressSmoke.start(
+Wifibroadcast.Examples.WfbIngressSmoke.start(
   interfaces: ["wlan0mon"],
   link_id: 0x7505d6,
   radio_ports: [4, 5],
@@ -204,7 +204,7 @@ NervesWifibroadcast.Examples.WfbIngressSmoke.start(
 )
 ```
 
-Packets for unknown radio ports or the wrong `link_id` are dropped directly by `NervesWifibroadcast.Membrane.Radio.Source`.
+Packets for unknown radio ports or the wrong `link_id` are dropped directly by `Wifibroadcast.Membrane.Radio.Source`.
 
 ## WFB Decrypt Smoke Test
 
@@ -220,7 +220,7 @@ Load it in IEx:
 Start the pipeline:
 
 ```elixir
-NervesWifibroadcast.Examples.WfbDecryptSmoke.start(
+Wifibroadcast.Examples.WfbDecryptSmoke.start(
   interfaces: ["wlan0mon"],
   radio_port: 4
 )
@@ -229,13 +229,13 @@ NervesWifibroadcast.Examples.WfbDecryptSmoke.start(
 Enable only a subset of the already linked radio ports at runtime:
 
 ```elixir
-NervesWifibroadcast.Examples.WfbDecryptSmoke.set_radio_ports([4])
+Wifibroadcast.Examples.WfbDecryptSmoke.set_radio_ports([4])
 ```
 
 Stop it:
 
 ```elixir
-NervesWifibroadcast.Examples.WfbDecryptSmoke.stop()
+Wifibroadcast.Examples.WfbDecryptSmoke.stop()
 ```
 
 The example prints:
@@ -250,7 +250,7 @@ The example prints:
 Useful options:
 
 ```elixir
-NervesWifibroadcast.Examples.WfbDecryptSmoke.start(
+Wifibroadcast.Examples.WfbDecryptSmoke.start(
   interfaces: ["wlan0mon"],
   link_id: 0x7505d6,
   radio_ports: [4, 5],
@@ -283,7 +283,7 @@ Load it in IEx:
 Start the pipeline:
 
 ```elixir
-NervesWifibroadcast.Examples.WfbReorderFecSmoke.start(
+Wifibroadcast.Examples.WfbReorderFecSmoke.start(
   interfaces: ["wlan0mon"],
   radio_port: 4
 )
@@ -292,13 +292,13 @@ NervesWifibroadcast.Examples.WfbReorderFecSmoke.start(
 Enable only a subset of the already linked radio ports at runtime:
 
 ```elixir
-NervesWifibroadcast.Examples.WfbReorderFecSmoke.set_radio_ports([4])
+Wifibroadcast.Examples.WfbReorderFecSmoke.set_radio_ports([4])
 ```
 
 Stop it:
 
 ```elixir
-NervesWifibroadcast.Examples.WfbReorderFecSmoke.stop()
+Wifibroadcast.Examples.WfbReorderFecSmoke.stop()
 ```
 
 The example prints:
@@ -313,7 +313,7 @@ The example prints:
 Useful options:
 
 ```elixir
-NervesWifibroadcast.Examples.WfbReorderFecSmoke.start(
+Wifibroadcast.Examples.WfbReorderFecSmoke.start(
   interfaces: ["wlan0mon"],
   link_id: 0x7505d6,
   radio_ports: [4, 5],

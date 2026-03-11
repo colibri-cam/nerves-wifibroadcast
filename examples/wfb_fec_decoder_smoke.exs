@@ -1,14 +1,14 @@
-defmodule Wifibroadcast.Examples.WfbReorderFecSmoke do
+defmodule Wifibroadcast.Examples.WfbFecDecoderSmoke do
   @moduledoc """
-  IEx-friendly smoke test for the WFB reorder/FEC stage.
+  IEx-friendly smoke test for the WFB FEC decoder stage.
 
   Load it with:
 
-      iex -S mix -r examples/wfb_reorder_fec_smoke.exs
+      iex -S mix -r examples/wfb_fec_decoder_smoke.exs
 
   Then start the pipeline with:
 
-      Wifibroadcast.Examples.WfbReorderFecSmoke.start(
+      Wifibroadcast.Examples.WfbFecDecoderSmoke.start(
         interfaces: ["wlan0mon"],
         radio_port: 4
       )
@@ -16,7 +16,8 @@ defmodule Wifibroadcast.Examples.WfbReorderFecSmoke do
 
   import Bitwise
 
-  alias Wifibroadcast.Examples.WfbReorderFecSmoke.Pipeline
+  alias Wifibroadcast.Examples.WfbFecDecoderSmoke.Pipeline
+  alias Wifibroadcast.Membrane.WFB.Router
 
   @pipeline_name Pipeline
 
@@ -77,18 +78,18 @@ defmodule Wifibroadcast.Examples.WfbReorderFecSmoke do
     """
     Load the example:
 
-        iex -S mix -r examples/wfb_reorder_fec_smoke.exs
+        iex -S mix -r examples/wfb_fec_decoder_smoke.exs
 
     Start capture:
 
-        Wifibroadcast.Examples.WfbReorderFecSmoke.start(
+        Wifibroadcast.Examples.WfbFecDecoderSmoke.start(
           interfaces: [\"wlan0mon\"],
           radio_port: 4
         )
 
     Start capture for multiple linked radio ports:
 
-        Wifibroadcast.Examples.WfbReorderFecSmoke.start(
+        Wifibroadcast.Examples.WfbFecDecoderSmoke.start(
           interfaces: [\"wlan0mon\"],
           link_id: 0x7505d6,
           radio_ports: [4, 5],
@@ -102,17 +103,17 @@ defmodule Wifibroadcast.Examples.WfbReorderFecSmoke do
 
     Update enabled radio ports among the already linked outputs:
 
-        Wifibroadcast.Examples.WfbReorderFecSmoke.set_radio_ports([4])
+        Wifibroadcast.Examples.WfbFecDecoderSmoke.set_radio_ports([4])
 
     Stop capture:
 
-        Wifibroadcast.Examples.WfbReorderFecSmoke.stop()
+        Wifibroadcast.Examples.WfbFecDecoderSmoke.stop()
     """
   end
 
   defp normalize_opts(opts) do
     interfaces = normalize_interfaces(opts)
-    link_id = opts |> Keyword.get(:link_id, 7_669_206) |> normalize_link_id()
+    link_id = opts |> Keyword.get(:link_id, Router.default_link_id()) |> normalize_link_id()
     key_path = Keyword.get(opts, :key_path, "gs.key")
     min_epoch = Keyword.get(opts, :min_epoch, 0)
     ring_size = Keyword.get(opts, :ring_size, 40)
@@ -140,12 +141,18 @@ defmodule Wifibroadcast.Examples.WfbReorderFecSmoke do
       true ->
         opts
         |> Keyword.put(:interfaces, interfaces)
+        |> Keyword.put_new(:frame_buffer_size, 4_301)
         |> Keyword.put(:link_id, link_id)
         |> Keyword.put(:key_path, key_path)
+        |> Keyword.put_new(:max_preview_bytes, 32)
+        |> Keyword.put_new(:max_queue_size, 256)
+        |> Keyword.put_new(:max_read_burst, 32)
         |> Keyword.put(:min_epoch, min_epoch)
+        |> Keyword.put_new(:print_first, 10)
         |> Keyword.put(:ring_size, ring_size)
         |> Keyword.delete(:radio_port)
         |> Keyword.put(:radio_ports, radio_ports)
+        |> Keyword.put_new(:summary_every_ms, 1_000)
     end
   end
 
@@ -235,25 +242,25 @@ defmodule Wifibroadcast.Examples.WfbReorderFecSmoke do
         format_channel_id(make_channel_id(link_id, radio_port))
       end)
 
-    IO.puts("[wfb_reorder_fec_smoke] started")
+    IO.puts("[wfb_fec_decoder_smoke] started")
 
     IO.puts(
-      "[wfb_reorder_fec_smoke] interfaces=#{Enum.join(Keyword.fetch!(opts, :interfaces), ",")}"
+      "[wfb_fec_decoder_smoke] interfaces=#{Enum.join(Keyword.fetch!(opts, :interfaces), ",")}"
     )
 
-    IO.puts("[wfb_reorder_fec_smoke] link_id=#{format_link_id(link_id)}")
-    IO.puts("[wfb_reorder_fec_smoke] radio_ports=[#{radio_ports}]")
-    IO.puts("[wfb_reorder_fec_smoke] channel_ids=[#{channel_ids}]")
+    IO.puts("[wfb_fec_decoder_smoke] link_id=#{format_link_id(link_id)}")
+    IO.puts("[wfb_fec_decoder_smoke] radio_ports=[#{radio_ports}]")
+    IO.puts("[wfb_fec_decoder_smoke] channel_ids=[#{channel_ids}]")
 
     IO.puts(
-      "[wfb_reorder_fec_smoke] key_path=#{Keyword.fetch!(opts, :key_path)} min_epoch=#{Keyword.fetch!(opts, :min_epoch)} ring_size=#{Keyword.fetch!(opts, :ring_size)}"
+      "[wfb_fec_decoder_smoke] key_path=#{Keyword.fetch!(opts, :key_path)} min_epoch=#{Keyword.fetch!(opts, :min_epoch)} ring_size=#{Keyword.fetch!(opts, :ring_size)}"
     )
 
     IO.puts(
-      "[wfb_reorder_fec_smoke] waiting for a valid session announcement before ordered source shards appear"
+      "[wfb_fec_decoder_smoke] waiting for a valid session announcement before ordered source shards appear"
     )
 
-    IO.puts("[wfb_reorder_fec_smoke] stop with Wifibroadcast.Examples.WfbReorderFecSmoke.stop()")
+    IO.puts("[wfb_fec_decoder_smoke] stop with Wifibroadcast.Examples.WfbFecDecoderSmoke.stop()")
   end
 
   defp format_channel_id(channel_id) do
@@ -269,87 +276,7 @@ defmodule Wifibroadcast.Examples.WfbReorderFecSmoke do
   end
 end
 
-defmodule Wifibroadcast.Examples.WfbReorderFecSmoke.Pipeline do
-  use Membrane.Pipeline
-
-  require Membrane.Pad
-
-  alias Wifibroadcast.Examples.WfbReorderFecSmoke.ChannelSink
-  alias Wifibroadcast.Membrane.Radio.Source
-  alias Wifibroadcast.Membrane.WFB.Decrypt
-  alias Wifibroadcast.Membrane.WFB.ReorderFec
-
-  def start_link(opts) do
-    Membrane.Pipeline.start_link(__MODULE__, opts, name: __MODULE__)
-  end
-
-  @impl true
-  def handle_init(_ctx, opts) do
-    link_id = Keyword.fetch!(opts, :link_id)
-    radio_ports = Keyword.fetch!(opts, :radio_ports)
-
-    source_opts =
-      Keyword.take(opts, [
-        :interfaces,
-        :frame_buffer_size,
-        :max_read_burst,
-        :max_queue_size,
-        :link_id,
-        :radio_port,
-        :radio_ports
-      ])
-
-    decrypt_opts = Keyword.take(opts, [:key_path, :min_epoch])
-    reorder_opts = Keyword.take(opts, [:ring_size])
-    sink_opts = Keyword.take(opts, [:print_first, :summary_every_ms, :max_preview_bytes])
-
-    spec =
-      [child(:source, struct(Source, source_opts))] ++
-        Enum.map(radio_ports, fn radio_port ->
-          get_child(:source)
-          |> via_out(Membrane.Pad.ref(:output, radio_port))
-          |> child({:decrypt, radio_port}, struct(Decrypt, decrypt_opts))
-          |> child({:reorder_fec, radio_port}, struct(ReorderFec, reorder_opts))
-          |> child(
-            {:sink, radio_port},
-            struct(
-              ChannelSink,
-              Keyword.merge(sink_opts, link_id: link_id, radio_port: radio_port)
-            )
-          )
-        end)
-
-    {[spec: spec], %{linked_radio_ports: MapSet.new(radio_ports)}}
-  end
-
-  @impl true
-  def handle_call({:set_radio_ports, radio_ports}, _ctx, state) do
-    requested = MapSet.new(radio_ports)
-
-    unknown =
-      MapSet.difference(requested, state.linked_radio_ports) |> MapSet.to_list() |> Enum.sort()
-
-    if unknown == [] do
-      {[notify_child: {:source, {:set_radio_ports, radio_ports}}, reply: :ok], state}
-    else
-      {[reply: {:error, {:unlinked_radio_ports, unknown}}], state}
-    end
-  end
-
-  @impl true
-  def handle_child_notification(notification, child, _ctx, state) do
-    IO.puts("[wfb_reorder_fec_smoke] #{inspect(child)} notification: #{inspect(notification)}")
-    {[], state}
-  end
-
-  @impl true
-  def handle_child_playing(child, _ctx, state) do
-    IO.puts("[wfb_reorder_fec_smoke] #{inspect(child)} is playing")
-    {[], state}
-  end
-end
-
-defmodule Wifibroadcast.Examples.WfbReorderFecSmoke.ChannelSink do
+defmodule Wifibroadcast.Examples.WfbFecDecoderSmoke.ChannelSink do
   use Membrane.Sink
 
   import Bitwise
@@ -412,14 +339,14 @@ defmodule Wifibroadcast.Examples.WfbReorderFecSmoke.ChannelSink do
 
   @impl true
   def handle_start_of_stream(:input, _ctx, state) do
-    IO.puts("[wfb_reorder_fec_smoke #{scope_label(state)}] stream started")
+    IO.puts("[wfb_fec_decoder_smoke #{scope_label(state)}] stream started")
     {[], state}
   end
 
   @impl true
   def handle_stream_format(:input, %OrderedShardStreamFormat{} = format, _ctx, state) do
     IO.puts(
-      "[wfb_reorder_fec_smoke #{scope_label(state)}] session epoch=#{format.epoch} fec=#{format.fec_type}:#{format.fec_k}/#{format.fec_n} channel_id=#{format_channel_id(format.channel_id)}"
+      "[wfb_fec_decoder_smoke #{scope_label(state)}] session epoch=#{format.epoch} fec=#{format.fec_type}:#{format.fec_k}/#{format.fec_n} channel_id=#{format_channel_id(format.channel_id)}"
     )
 
     {[],
@@ -464,7 +391,7 @@ defmodule Wifibroadcast.Examples.WfbReorderFecSmoke.ChannelSink do
     bits_per_second = bytes_per_second * 8
 
     IO.puts(
-      "[wfb_reorder_fec_smoke #{scope_label(state)}] summary shards=#{delta_total_shards} data=#{delta_data_shards} fec_only=#{delta_fec_only_shards} recovered=#{delta_recovered_shards} rate=#{format_float(shards_per_second)} shard/s bytes=#{delta_bytes} rate=#{format_byte_rate(bytes_per_second)} bitrate=#{format_bit_rate(bits_per_second)} #{format_session(state.last_session_format)} #{format_shard(state.last_shard)} #{format_radiotap(state.last_radiotap)}"
+      "[wfb_fec_decoder_smoke #{scope_label(state)}] summary shards=#{delta_total_shards} data=#{delta_data_shards} fec_only=#{delta_fec_only_shards} recovered=#{delta_recovered_shards} rate=#{format_float(shards_per_second)} shard/s bytes=#{delta_bytes} rate=#{format_byte_rate(bytes_per_second)} bitrate=#{format_bit_rate(bits_per_second)} #{format_session(state.last_session_format)} #{format_shard(state.last_shard)} #{format_radiotap(state.last_radiotap)}"
     )
 
     next_state = %{
@@ -482,7 +409,7 @@ defmodule Wifibroadcast.Examples.WfbReorderFecSmoke.ChannelSink do
 
   @impl true
   def handle_end_of_stream(:input, _ctx, state) do
-    IO.puts("[wfb_reorder_fec_smoke #{scope_label(state)}] end of stream")
+    IO.puts("[wfb_fec_decoder_smoke #{scope_label(state)}] end of stream")
     {[], state}
   end
 
@@ -490,7 +417,7 @@ defmodule Wifibroadcast.Examples.WfbReorderFecSmoke.ChannelSink do
 
   defp maybe_print_preview(state, shard) do
     IO.puts(
-      "[wfb_reorder_fec_smoke #{scope_label(state)}] shard=#{state.total_shards} payload_bytes=#{byte_size(shard.payload)} #{format_shard(shard)} #{format_radiotap(state.last_radiotap)} preview=#{hex_preview(shard.payload, state.max_preview_bytes)}"
+      "[wfb_fec_decoder_smoke #{scope_label(state)}] shard=#{state.total_shards} payload_bytes=#{byte_size(shard.payload)} #{format_shard(shard)} #{format_radiotap(state.last_radiotap)} preview=#{hex_preview(shard.payload, state.max_preview_bytes)}"
     )
 
     %{state | preview_left: state.preview_left - 1}
@@ -693,4 +620,94 @@ defmodule Wifibroadcast.Examples.WfbReorderFecSmoke.ChannelSink do
   end
 end
 
-IO.puts(Wifibroadcast.Examples.WfbReorderFecSmoke.usage())
+defmodule Wifibroadcast.Examples.WfbFecDecoderSmoke.Pipeline do
+  use Membrane.Pipeline
+
+  require Membrane.Pad
+
+  alias Wifibroadcast.Examples.WfbFecDecoderSmoke.ChannelSink
+  alias Wifibroadcast.Membrane.Radio.Source
+  alias Wifibroadcast.Membrane.WFB.Decrypt
+  alias Wifibroadcast.Membrane.WFB.FecDecoder
+
+  def start_link(opts) do
+    Membrane.Pipeline.start_link(__MODULE__, opts, name: __MODULE__)
+  end
+
+  @impl true
+  def handle_init(_ctx, opts) do
+    frame_buffer_size = Keyword.fetch!(opts, :frame_buffer_size)
+    link_id = Keyword.fetch!(opts, :link_id)
+    interfaces = Keyword.fetch!(opts, :interfaces)
+    key_path = Keyword.fetch!(opts, :key_path)
+    max_preview_bytes = Keyword.fetch!(opts, :max_preview_bytes)
+    max_queue_size = Keyword.fetch!(opts, :max_queue_size)
+    max_read_burst = Keyword.fetch!(opts, :max_read_burst)
+    min_epoch = Keyword.fetch!(opts, :min_epoch)
+    print_first = Keyword.fetch!(opts, :print_first)
+    radio_ports = Keyword.fetch!(opts, :radio_ports)
+    ring_size = Keyword.fetch!(opts, :ring_size)
+    summary_every_ms = Keyword.fetch!(opts, :summary_every_ms)
+
+    spec =
+      [
+        child(:source, %Source{
+          frame_buffer_size: frame_buffer_size,
+          interfaces: interfaces,
+          link_id: link_id,
+          max_queue_size: max_queue_size,
+          max_read_burst: max_read_burst,
+          radio_ports: radio_ports
+        })
+      ] ++
+        Enum.map(radio_ports, fn radio_port ->
+          get_child(:source)
+          |> via_out(Membrane.Pad.ref(:output, radio_port))
+          |> child({:decrypt, radio_port}, %Decrypt{key_path: key_path, min_epoch: min_epoch})
+          |> child({:fec_decoder, radio_port}, %FecDecoder{
+            min_epoch: min_epoch,
+            ring_size: ring_size
+          })
+          |> child(
+            {:sink, radio_port},
+            %ChannelSink{
+              link_id: link_id,
+              max_preview_bytes: max_preview_bytes,
+              print_first: print_first,
+              radio_port: radio_port,
+              summary_every_ms: summary_every_ms
+            }
+          )
+        end)
+
+    {[spec: spec], %{linked_radio_ports: MapSet.new(radio_ports)}}
+  end
+
+  @impl true
+  def handle_call({:set_radio_ports, radio_ports}, _ctx, state) do
+    requested = MapSet.new(radio_ports)
+
+    unknown =
+      MapSet.difference(requested, state.linked_radio_ports) |> MapSet.to_list() |> Enum.sort()
+
+    if unknown == [] do
+      {[notify_child: {:source, {:set_radio_ports, radio_ports}}, reply: :ok], state}
+    else
+      {[reply: {:error, {:unlinked_radio_ports, unknown}}], state}
+    end
+  end
+
+  @impl true
+  def handle_child_notification(notification, child, _ctx, state) do
+    IO.puts("[wfb_fec_decoder_smoke] #{inspect(child)} notification: #{inspect(notification)}")
+    {[], state}
+  end
+
+  @impl true
+  def handle_child_playing(child, _ctx, state) do
+    IO.puts("[wfb_fec_decoder_smoke] #{inspect(child)} is playing")
+    {[], state}
+  end
+end
+
+IO.puts(Wifibroadcast.Examples.WfbFecDecoderSmoke.usage())

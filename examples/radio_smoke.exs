@@ -12,6 +12,7 @@ defmodule Wifibroadcast.Examples.RadioSmoke do
   """
 
   alias Wifibroadcast.Examples.RadioSmoke.Pipeline
+  alias Wifibroadcast.Membrane.WFB.Router
 
   @pipeline_name Pipeline
 
@@ -98,7 +99,14 @@ defmodule Wifibroadcast.Examples.RadioSmoke do
          Enum.all?(interfaces, &(is_binary(&1) and &1 != "")) do
       opts
       |> Keyword.put(:interfaces, Enum.uniq(interfaces))
+      |> Keyword.put_new(:frame_buffer_size, 4_301)
+      |> Keyword.put_new(:link_id, Router.default_link_id())
+      |> Keyword.put_new(:max_preview_bytes, 32)
+      |> Keyword.put_new(:max_queue_size, 256)
+      |> Keyword.put_new(:max_read_burst, 32)
+      |> Keyword.put_new(:print_first, 10)
       |> Keyword.put_new(:radio_port, 0)
+      |> Keyword.put_new(:summary_every_ms, 1_000)
     else
       raise ArgumentError,
             "expected :interfaces option, for example start(interfaces: [\"wlan0mon\"])"
@@ -110,56 +118,6 @@ defmodule Wifibroadcast.Examples.RadioSmoke do
     IO.puts("[radio_smoke] interfaces=#{Enum.join(Keyword.fetch!(opts, :interfaces), ",")}")
     IO.puts("[radio_smoke] radio_port=#{Keyword.fetch!(opts, :radio_port)}")
     IO.puts("[radio_smoke] stop with Wifibroadcast.Examples.RadioSmoke.stop()")
-  end
-end
-
-defmodule Wifibroadcast.Examples.RadioSmoke.Pipeline do
-  use Membrane.Pipeline
-
-  require Membrane.Pad
-
-  alias Wifibroadcast.Examples.RadioSmoke.Sink
-  alias Wifibroadcast.Membrane.Radio.Source
-
-  def start_link(opts) do
-    Membrane.Pipeline.start_link(__MODULE__, opts, name: __MODULE__)
-  end
-
-  @impl true
-  def handle_init(_ctx, opts) do
-    radio_port = Keyword.fetch!(opts, :radio_port)
-
-    source_opts =
-      Keyword.take(opts, [
-        :interfaces,
-        :frame_buffer_size,
-        :max_read_burst,
-        :max_queue_size,
-        :link_id,
-        :radio_port,
-        :radio_ports
-      ])
-
-    sink_opts = Keyword.take(opts, [:print_first, :summary_every_ms, :max_preview_bytes])
-
-    spec =
-      child(:source, struct(Source, source_opts))
-      |> via_out(Membrane.Pad.ref(:output, radio_port))
-      |> child(:sink, struct(Sink, sink_opts))
-
-    {[spec: spec], %{}}
-  end
-
-  @impl true
-  def handle_child_notification(notification, child, _ctx, state) do
-    IO.puts("[radio_smoke] #{inspect(child)} notification: #{inspect(notification)}")
-    {[], state}
-  end
-
-  @impl true
-  def handle_child_playing(child, _ctx, state) do
-    IO.puts("[radio_smoke] #{inspect(child)} is playing")
-    {[], state}
   end
 end
 
@@ -459,6 +417,62 @@ defmodule Wifibroadcast.Examples.RadioSmoke.Sink do
 
   defp format_bit_rate(bits_per_second) do
     format_float(bits_per_second / (1000 * 1000 * 1000)) <> " Gb/s"
+  end
+end
+
+defmodule Wifibroadcast.Examples.RadioSmoke.Pipeline do
+  use Membrane.Pipeline
+
+  require Membrane.Pad
+
+  alias Wifibroadcast.Examples.RadioSmoke.Sink
+  alias Wifibroadcast.Membrane.Radio.Source
+
+  def start_link(opts) do
+    Membrane.Pipeline.start_link(__MODULE__, opts, name: __MODULE__)
+  end
+
+  @impl true
+  def handle_init(_ctx, opts) do
+    interfaces = Keyword.fetch!(opts, :interfaces)
+    frame_buffer_size = Keyword.fetch!(opts, :frame_buffer_size)
+    link_id = Keyword.fetch!(opts, :link_id)
+    max_preview_bytes = Keyword.fetch!(opts, :max_preview_bytes)
+    max_queue_size = Keyword.fetch!(opts, :max_queue_size)
+    max_read_burst = Keyword.fetch!(opts, :max_read_burst)
+    print_first = Keyword.fetch!(opts, :print_first)
+    radio_port = Keyword.fetch!(opts, :radio_port)
+    summary_every_ms = Keyword.fetch!(opts, :summary_every_ms)
+
+    spec =
+      child(:source, %Source{
+        frame_buffer_size: frame_buffer_size,
+        interfaces: interfaces,
+        link_id: link_id,
+        max_queue_size: max_queue_size,
+        max_read_burst: max_read_burst,
+        radio_port: radio_port
+      })
+      |> via_out(Membrane.Pad.ref(:output, radio_port))
+      |> child(:sink, %Sink{
+        max_preview_bytes: max_preview_bytes,
+        print_first: print_first,
+        summary_every_ms: summary_every_ms
+      })
+
+    {[spec: spec], %{}}
+  end
+
+  @impl true
+  def handle_child_notification(notification, child, _ctx, state) do
+    IO.puts("[radio_smoke] #{inspect(child)} notification: #{inspect(notification)}")
+    {[], state}
+  end
+
+  @impl true
+  def handle_child_playing(child, _ctx, state) do
+    IO.puts("[radio_smoke] #{inspect(child)} is playing")
+    {[], state}
   end
 end
 

@@ -37,25 +37,17 @@ alias Wifibroadcast.Membrane.WFB.Encrypt
 alias Wifibroadcast.Membrane.WFB.FecEncoder
 alias Wifibroadcast.Membrane.WFB.PayloadWrap
 
-children = [
-  payload_wrap_4: %PayloadWrap{link_id: 0x7505D6, radio_port: 4},
-  fec_encoder_4: %FecEncoder{k: 8, n: 12, fec_timeout_ms: 20},
-  encrypt_4: %Encrypt{key_path: "drone.key"},
-  radio_sink: %Sink{
+spec =
+  child(:payload_wrap_4, %PayloadWrap{link_id: 0x7505D6, radio_port: 4})
+  |> child(:fec_encoder_4, %FecEncoder{k: 8, n: 12, fec_timeout_ms: 20})
+  |> child(:encrypt_4, %Encrypt{key_path: "drone.key"})
+  |> via_in(Pad.ref(:input, 4))
+  |> child(:radio_sink, %Sink{
     interfaces: ["wlan0mon", "wlan1mon"],
     bandwidth: 20,
     mcs_index: 1,
     short_gi: :long
-  }
-]
-
-links = [
-  link(:payload_wrap_4)
-  |> to(:fec_encoder_4)
-  |> to(:encrypt_4)
-  |> via_in(Pad.ref(:input, 4))
-  |> to(:radio_sink)
-]
+  })
 ```
 
 By default `Radio.Sink` opens TX sockets with qdisc bypass enabled for the
@@ -212,22 +204,22 @@ Wifibroadcast.Examples.WfbDecryptSmoke.start(
 The decrypt stage waits for a valid session announcement before decrypted data
 fragments begin to flow.
 
-## WFB Reorder/FEC Smoke Test
+## WFB FEC Decoder Smoke Test
 
-`examples/wfb_reorder_fec_smoke.exs` smoke-tests the next stage of the RX
+`examples/wfb_fec_decoder_smoke.exs` smoke-tests the next stage of the RX
 pipeline:
 `Radio.Source -> WFB.Decrypt -> WFB.FecDecoder -> per-radio-port sinks`.
 
 Load it in IEx:
 
 ```bash
-  iex -S mix -r examples/wfb_reorder_fec_smoke.exs
+  iex -S mix -r examples/wfb_fec_decoder_smoke.exs
 ```
 
 Start the pipeline:
 
 ```elixir
-Wifibroadcast.Examples.WfbReorderFecSmoke.start(
+Wifibroadcast.Examples.WfbFecDecoderSmoke.start(
   interfaces: ["wlan0mon"],
   radio_port: 4
 )
@@ -236,18 +228,18 @@ Wifibroadcast.Examples.WfbReorderFecSmoke.start(
 Enable only a subset of the already linked radio ports at runtime:
 
 ```elixir
-Wifibroadcast.Examples.WfbReorderFecSmoke.set_radio_ports([4])
+Wifibroadcast.Examples.WfbFecDecoderSmoke.set_radio_ports([4])
 ```
 
 Stop it:
 
 ```elixir
-Wifibroadcast.Examples.WfbReorderFecSmoke.stop()
+Wifibroadcast.Examples.WfbFecDecoderSmoke.stop()
 ```
 
 The example prints:
 
-- reorder/FEC pipeline child notifications from the pipeline
+- FEC decoder pipeline child notifications from the pipeline
 - accepted decrypt session updates before ordered shards start flowing
 - first ordered shard previews per configured `radio_port`
 - periodic summaries with ordered shard counts, recovered shard counts, and payload throughput
@@ -257,7 +249,7 @@ The example prints:
 Useful options:
 
 ```elixir
-Wifibroadcast.Examples.WfbReorderFecSmoke.start(
+Wifibroadcast.Examples.WfbFecDecoderSmoke.start(
   interfaces: ["wlan0mon"],
   link_id: 0x7505d6,
   radio_ports: [4, 5],
@@ -270,5 +262,5 @@ Wifibroadcast.Examples.WfbReorderFecSmoke.start(
 )
 ```
 
-The reorder/FEC stage emits only ordered source shards. FEC-only shards stay
+The FEC decoder stage emits only ordered source shards. FEC-only shards stay
 internal unless they are needed to recover missing source shards.

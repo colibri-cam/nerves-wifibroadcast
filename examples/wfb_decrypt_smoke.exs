@@ -17,6 +17,7 @@ defmodule Wifibroadcast.Examples.WfbDecryptSmoke do
   import Bitwise
 
   alias Wifibroadcast.Examples.WfbDecryptSmoke.Pipeline
+  alias Wifibroadcast.Membrane.WFB.Router
 
   @pipeline_name Pipeline
 
@@ -111,7 +112,7 @@ defmodule Wifibroadcast.Examples.WfbDecryptSmoke do
 
   defp normalize_opts(opts) do
     interfaces = normalize_interfaces(opts)
-    link_id = opts |> Keyword.get(:link_id, 7_669_206) |> normalize_link_id()
+    link_id = opts |> Keyword.get(:link_id, Router.default_link_id()) |> normalize_link_id()
     key_path = Keyword.get(opts, :key_path, "gs.key")
     min_epoch = Keyword.get(opts, :min_epoch, 0)
 
@@ -135,11 +136,17 @@ defmodule Wifibroadcast.Examples.WfbDecryptSmoke do
       true ->
         opts
         |> Keyword.put(:interfaces, interfaces)
+        |> Keyword.put_new(:frame_buffer_size, 4_301)
         |> Keyword.put(:link_id, link_id)
         |> Keyword.put(:key_path, key_path)
+        |> Keyword.put_new(:max_preview_bytes, 32)
+        |> Keyword.put_new(:max_queue_size, 256)
+        |> Keyword.put_new(:max_read_burst, 32)
         |> Keyword.put(:min_epoch, min_epoch)
+        |> Keyword.put_new(:print_first, 10)
         |> Keyword.delete(:radio_port)
         |> Keyword.put(:radio_ports, radio_ports)
+        |> Keyword.put_new(:summary_every_ms, 1_000)
     end
   end
 
@@ -256,83 +263,6 @@ defmodule Wifibroadcast.Examples.WfbDecryptSmoke do
 
   defp make_channel_id(link_id, radio_port) do
     (link_id <<< 8) + radio_port
-  end
-end
-
-defmodule Wifibroadcast.Examples.WfbDecryptSmoke.Pipeline do
-  use Membrane.Pipeline
-
-  require Membrane.Pad
-
-  alias Wifibroadcast.Examples.WfbDecryptSmoke.ChannelSink
-  alias Wifibroadcast.Membrane.Radio.Source
-  alias Wifibroadcast.Membrane.WFB.Decrypt
-
-  def start_link(opts) do
-    Membrane.Pipeline.start_link(__MODULE__, opts, name: __MODULE__)
-  end
-
-  @impl true
-  def handle_init(_ctx, opts) do
-    link_id = Keyword.fetch!(opts, :link_id)
-    radio_ports = Keyword.fetch!(opts, :radio_ports)
-
-    source_opts =
-      Keyword.take(opts, [
-        :interfaces,
-        :frame_buffer_size,
-        :max_read_burst,
-        :max_queue_size,
-        :link_id,
-        :radio_port,
-        :radio_ports
-      ])
-
-    decrypt_opts = Keyword.take(opts, [:key_path, :min_epoch])
-    sink_opts = Keyword.take(opts, [:print_first, :summary_every_ms, :max_preview_bytes])
-
-    spec =
-      [child(:source, struct(Source, source_opts))] ++
-        Enum.map(radio_ports, fn radio_port ->
-          get_child(:source)
-          |> via_out(Membrane.Pad.ref(:output, radio_port))
-          |> child({:decrypt, radio_port}, struct(Decrypt, decrypt_opts))
-          |> child(
-            {:sink, radio_port},
-            struct(
-              ChannelSink,
-              Keyword.merge(sink_opts, link_id: link_id, radio_port: radio_port)
-            )
-          )
-        end)
-
-    {[spec: spec], %{linked_radio_ports: MapSet.new(radio_ports)}}
-  end
-
-  @impl true
-  def handle_call({:set_radio_ports, radio_ports}, _ctx, state) do
-    requested = MapSet.new(radio_ports)
-
-    unknown =
-      MapSet.difference(requested, state.linked_radio_ports) |> MapSet.to_list() |> Enum.sort()
-
-    if unknown == [] do
-      {[notify_child: {:source, {:set_radio_ports, radio_ports}}, reply: :ok], state}
-    else
-      {[reply: {:error, {:unlinked_radio_ports, unknown}}], state}
-    end
-  end
-
-  @impl true
-  def handle_child_notification(notification, child, _ctx, state) do
-    IO.puts("[wfb_decrypt_smoke] #{inspect(child)} notification: #{inspect(notification)}")
-    {[], state}
-  end
-
-  @impl true
-  def handle_child_playing(child, _ctx, state) do
-    IO.puts("[wfb_decrypt_smoke] #{inspect(child)} is playing")
-    {[], state}
   end
 end
 
@@ -696,6 +626,90 @@ defmodule Wifibroadcast.Examples.WfbDecryptSmoke.ChannelSink do
 
   defp format_bit_rate(bits_per_second) do
     format_float(bits_per_second / (1000 * 1000 * 1000)) <> " Gb/s"
+  end
+end
+
+defmodule Wifibroadcast.Examples.WfbDecryptSmoke.Pipeline do
+  use Membrane.Pipeline
+
+  require Membrane.Pad
+
+  alias Wifibroadcast.Examples.WfbDecryptSmoke.ChannelSink
+  alias Wifibroadcast.Membrane.Radio.Source
+  alias Wifibroadcast.Membrane.WFB.Decrypt
+
+  def start_link(opts) do
+    Membrane.Pipeline.start_link(__MODULE__, opts, name: __MODULE__)
+  end
+
+  @impl true
+  def handle_init(_ctx, opts) do
+    frame_buffer_size = Keyword.fetch!(opts, :frame_buffer_size)
+    link_id = Keyword.fetch!(opts, :link_id)
+    interfaces = Keyword.fetch!(opts, :interfaces)
+    key_path = Keyword.fetch!(opts, :key_path)
+    max_preview_bytes = Keyword.fetch!(opts, :max_preview_bytes)
+    max_queue_size = Keyword.fetch!(opts, :max_queue_size)
+    max_read_burst = Keyword.fetch!(opts, :max_read_burst)
+    min_epoch = Keyword.fetch!(opts, :min_epoch)
+    print_first = Keyword.fetch!(opts, :print_first)
+    radio_ports = Keyword.fetch!(opts, :radio_ports)
+    summary_every_ms = Keyword.fetch!(opts, :summary_every_ms)
+
+    spec =
+      [
+        child(:source, %Source{
+          frame_buffer_size: frame_buffer_size,
+          interfaces: interfaces,
+          link_id: link_id,
+          max_queue_size: max_queue_size,
+          max_read_burst: max_read_burst,
+          radio_ports: radio_ports
+        })
+      ] ++
+        Enum.map(radio_ports, fn radio_port ->
+          get_child(:source)
+          |> via_out(Membrane.Pad.ref(:output, radio_port))
+          |> child({:decrypt, radio_port}, %Decrypt{key_path: key_path, min_epoch: min_epoch})
+          |> child(
+            {:sink, radio_port},
+            %ChannelSink{
+              link_id: link_id,
+              max_preview_bytes: max_preview_bytes,
+              print_first: print_first,
+              radio_port: radio_port,
+              summary_every_ms: summary_every_ms
+            }
+          )
+        end)
+
+    {[spec: spec], %{linked_radio_ports: MapSet.new(radio_ports)}}
+  end
+
+  @impl true
+  def handle_call({:set_radio_ports, radio_ports}, _ctx, state) do
+    requested = MapSet.new(radio_ports)
+
+    unknown =
+      MapSet.difference(requested, state.linked_radio_ports) |> MapSet.to_list() |> Enum.sort()
+
+    if unknown == [] do
+      {[notify_child: {:source, {:set_radio_ports, radio_ports}}, reply: :ok], state}
+    else
+      {[reply: {:error, {:unlinked_radio_ports, unknown}}], state}
+    end
+  end
+
+  @impl true
+  def handle_child_notification(notification, child, _ctx, state) do
+    IO.puts("[wfb_decrypt_smoke] #{inspect(child)} notification: #{inspect(notification)}")
+    {[], state}
+  end
+
+  @impl true
+  def handle_child_playing(child, _ctx, state) do
+    IO.puts("[wfb_decrypt_smoke] #{inspect(child)} is playing")
+    {[], state}
   end
 end
 

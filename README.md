@@ -305,7 +305,7 @@ Runnable smoke examples live in `examples/README.md`:
 
 - `examples/radio_smoke.exs`
 - `examples/wfb_decrypt_smoke.exs`
-- `examples/wfb_reorder_fec_smoke.exs`
+- `examples/wfb_fec_decoder_smoke.exs`
 
 These are intended for step-by-step validation on real Linux / Nerves hardware.
 
